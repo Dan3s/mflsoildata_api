@@ -118,6 +118,28 @@ mflsoildata_api/
 - `GET /measurements/{measurement_id}` - Obtener una medición específica
 - `POST /measurements/` - Crear una nueva medición
 
+### Dashboard
+- `GET /dashboard/summary` - Métricas generales del dashboard
+- `GET /dashboard/records` - Tabla unificada con joins y filtros
+- `GET /dashboard/export` - Exportación CSV de los resultados filtrados
+
+### Lookups
+- `GET /projects/options` - Catálogo ligero de proyectos
+- `GET /projects/summary` - Resumen rápido de proyectos y sitios
+- `GET /sites/options?project_id=...` - Catálogo ligero de sitios
+- `GET /sample-types` - Catálogo de tipos de muestra
+- `GET /matrices` - Catálogo de matrices
+- `GET /variables` - Catálogo de variables con filtros
+- `GET /variables/options` - Catálogo ligero de variables para selects
+- `GET /measurement-statuses` - Catálogo de estados de medición
+- `GET /laboratories` - Catálogo de laboratorios
+
+### Visualization
+- `GET /visualization/timeseries` - Serie temporal agregada por período
+- `GET /visualization/by-site` - Comparación agregada por sitio
+- `GET /visualization/correlation` - Pares de valores y correlación
+- `GET /visualization/export` - Exportación CSV de la gráfica activa
+
 ### Health
 - `GET /health` - Verificar el estado de la API
 

@@ -11,6 +11,9 @@ from routes.projects import router as projects_router
 from routes.sites import router as sites_router
 from routes.samples import router as samples_router
 from routes.measurements import router as measurements_router
+from routes.lookups import router as lookups_router
+from routes.dashboard import router as dashboard_router
+from routes.visualization import router as visualization_router
 
 # Create FastAPI app
 app = FastAPI(
@@ -46,6 +49,9 @@ app.include_router(projects_router)
 app.include_router(sites_router)
 app.include_router(samples_router)
 app.include_router(measurements_router)
+app.include_router(lookups_router)
+app.include_router(dashboard_router)
+app.include_router(visualization_router)
 
 
 if __name__ == "__main__":
