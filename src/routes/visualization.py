@@ -95,6 +95,8 @@ def _base_filtered_query(
         .outerjoin(Unit, Measurement.unit_id == Unit.id)
     )
 
+    query = query.filter(SamplingEvent.event_date.isnot(None))
+
     if project_id is not None:
         query = query.filter(Project.id == project_id)
     if site_id is not None:

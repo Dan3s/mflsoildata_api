@@ -1,11 +1,35 @@
 from fastapi import APIRouter, HTTPException, Query
 from typing import List
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from mflsoildata_orm.database import SessionLocal
 from mflsoildata_orm.models.measurement import Measurement as MeasurementModel
+from mflsoildata_orm.models.sample import Sample as SampleModel
 from schemas.measurements import MeasurementRead, MeasurementCreate
 
 router = APIRouter(prefix="/measurements", tags=["Measurements"])
+
+
+def _measurement_to_read(measurement: MeasurementModel) -> dict:
+    event_date = None
+    if measurement.sample and measurement.sample.event:
+        event_date = measurement.sample.event.event_date
+
+    return {
+        "id": measurement.id,
+        "measurement_code": measurement.measurement_code,
+        "sample_id": measurement.sample_id,
+        "event_date": event_date,
+        "variable_id": measurement.variable_id,
+        "lab_batch_id": measurement.lab_batch_id,
+        "unit_id": measurement.unit_id,
+        "value_numeric": measurement.value_numeric,
+        "value_text": measurement.value_text,
+        "value_boolean": measurement.value_boolean,
+        "value_date": measurement.value_date,
+        "qualifier_result": measurement.qualifier_result,
+        "created_at": measurement.created_at,
+        "updated_at": measurement.updated_at,
+    }
 
 
 @router.get("/", response_model=List[MeasurementRead])
@@ -20,7 +44,9 @@ async def get_measurements(
     """
     db = SessionLocal()
     try:
-        query = db.query(MeasurementModel)
+        query = db.query(MeasurementModel).options(
+            joinedload(MeasurementModel.sample).joinedload(SampleModel.event)
+        )
         
         if sample_id:
             query = query.filter(MeasurementModel.sample_id == sample_id)
@@ -28,7 +54,7 @@ async def get_measurements(
             query = query.filter(MeasurementModel.variable_id == variable_id)
         
         measurements = query.offset(skip).limit(limit).all()
-        return measurements
+        return [_measurement_to_read(measurement) for measurement in measurements]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
@@ -42,10 +68,15 @@ async def get_measurement(measurement_id: int):
     """
     db = SessionLocal()
     try:
-        measurement = db.query(MeasurementModel).filter(MeasurementModel.id == measurement_id).first()
+        measurement = (
+            db.query(MeasurementModel)
+            .options(joinedload(MeasurementModel.sample).joinedload(SampleModel.event))
+            .filter(MeasurementModel.id == measurement_id)
+            .first()
+        )
         if not measurement:
             raise HTTPException(status_code=404, detail="Measurement not found")
-        return measurement
+        return _measurement_to_read(measurement)
     except HTTPException:
         raise
     except Exception as e:
@@ -65,7 +96,13 @@ async def create_measurement(measurement: MeasurementCreate):
         db.add(db_measurement)
         db.commit()
         db.refresh(db_measurement)
-        return db_measurement
+        db_measurement = (
+            db.query(MeasurementModel)
+            .options(joinedload(MeasurementModel.sample).joinedload(SampleModel.event))
+            .filter(MeasurementModel.id == db_measurement.id)
+            .first()
+        )
+        return _measurement_to_read(db_measurement)
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
