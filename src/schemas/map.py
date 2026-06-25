@@ -11,7 +11,6 @@ class SiteMapItem(BaseModel):
     project_name: str
     latitude: Optional[float] = None
     longitude: Optional[float] = None
-    status: str
     measurement_count: int
     last_event_date: Optional[date] = None
     last_updated: Optional[datetime] = None
@@ -41,6 +40,16 @@ class SiteMeasurementSummary(BaseModel):
     updated_at: Optional[datetime] = None
 
 
+class RecentMeasurementItem(BaseModel):
+    id: int
+    measurement_code: Optional[str] = None
+    variable_id: int
+    variable_name: str
+    value: Any = None
+    unit: Optional[str] = None
+    event_date: Optional[datetime] = None
+
+
 class SiteMapDetail(BaseModel):
     id: int
     site_code: str
@@ -50,14 +59,15 @@ class SiteMapDetail(BaseModel):
     admin_1: Optional[str] = None
     admin_2: Optional[str] = None
     admin_3: Optional[str] = None
+    altitude_m: Optional[float] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
-    status: str
     measurement_count: int
     last_event_date: Optional[date] = None
     last_updated: Optional[datetime] = None
     attributes: list[SiteAttributeItem] = []
     recent_variables: list[SiteMeasurementSummary] = []
+    recent_measurements: list[RecentMeasurementItem] = []
 
 
 class MapSummary(BaseModel):

@@ -53,6 +53,7 @@ def _site_base_query(db):
     ).label("last_updated")
     latitude = func.ST_Y(Site.geom).label("latitude")
     longitude = func.ST_X(Site.geom).label("longitude")
+    altitude = Site.altitude_m.label("altitude_m")
 
     return (
         db.query(
@@ -69,6 +70,7 @@ def _site_base_query(db):
             measurement_count,
             last_event_date,
             last_updated,
+            altitude,
         )
         .select_from(Site)
         .join(Project, Site.project_id == Project.id)
@@ -81,7 +83,6 @@ def _site_base_query(db):
 def _apply_site_filters(
     query,
     project_id: Optional[int] = None,
-    status: Optional[str] = None,
     search: Optional[str] = None,
     bbox: Optional[str] = None,
     north: Optional[float] = None,
@@ -113,15 +114,6 @@ def _apply_site_filters(
                 Project.name.ilike(pattern),
             )
         )
-
-    if status is not None:
-        normalized = status.lower()
-        if normalized not in {"active", "inactive"}:
-            raise HTTPException(status_code=400, detail="status must be active or inactive")
-        if normalized == "active":
-            query = query.having(func.count(Measurement.id) > 0)
-        else:
-            query = query.having(func.count(Measurement.id) == 0)
 
     return query.group_by(
         Site.id,
@@ -292,7 +284,6 @@ async def get_map_summary(
 @router.get("/sites", response_model=list[SiteMapItem])
 async def get_map_sites(
     project_id: Optional[int] = Query(None),
-    status: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
     bbox: Optional[str] = Query(None),
     north: Optional[float] = Query(None),
@@ -303,7 +294,7 @@ async def get_map_sites(
     db = SessionLocal()
     try:
         query = _site_base_query(db)
-        query = _apply_site_filters(query, project_id=project_id, status=status, search=search, bbox=bbox, north=north, south=south, east=east, west=west)
+        query = _apply_site_filters(query, project_id=project_id, search=search, bbox=bbox, north=north, south=south, east=east, west=west)
         rows = query.order_by(Site.site_code.asc()).all()
 
         results = []
@@ -317,7 +308,6 @@ async def get_map_sites(
                     project_name=row.project_name,
                     latitude=float(row.latitude) if row.latitude is not None else None,
                     longitude=float(row.longitude) if row.longitude is not None else None,
-                    status="active" if is_active else "inactive",
                     measurement_count=int(row.measurement_count or 0),
                     last_event_date=row.last_event_date,
                     last_updated=row.last_updated,
@@ -335,16 +325,70 @@ async def get_map_sites(
 
 
 @router.get("/sites/{site_id}", response_model=SiteMapDetail)
-async def get_map_site_detail(site_id: int):
+async def get_map_site_detail(
+    site_id: int,
+    recent_limit: int = Query(5, ge=1, le=50),
+    recent_only: bool = Query(False),
+):
     db = SessionLocal()
     try:
-        query = _site_base_query(db).filter(Site.id == site_id)
+        query = _apply_site_filters(_site_base_query(db), project_id=None).filter(Site.id == site_id)
         row = query.one_or_none()
         if not row:
             raise HTTPException(status_code=404, detail="Site not found")
+        # fetch attributes and recent variables unless client requested only recent measurements
+        attributes = []
+        recent_variables = []
+        if not recent_only:
+            attributes = _latest_site_attributes(db, site_id)
+            recent_variables = _recent_site_variables(db, site_id)
 
-        attributes = _latest_site_attributes(db, site_id)
-        recent_variables = _recent_site_variables(db, site_id)
+        # fetch recent measurements (only with event_date not null)
+        recent_rows = (
+            db.query(
+                Measurement.id.label("id"),
+                Measurement.measurement_code.label("measurement_code"),
+                Variable.id.label("variable_id"),
+                Variable.name.label("variable_name"),
+                Measurement.value_numeric.label("value_numeric"),
+                Measurement.value_text.label("value_text"),
+                Measurement.value_boolean.label("value_boolean"),
+                Measurement.value_date.label("value_date"),
+                Unit.symbol.label("unit_symbol"),
+                SamplingEvent.event_date.label("event_date"),
+                Measurement.updated_at.label("updated_at"),
+            )
+            .join(Sample, Measurement.sample_id == Sample.id)
+            .join(SamplingEvent, Sample.event_id == SamplingEvent.id)
+            .join(Variable, Measurement.variable_id == Variable.id)
+            .outerjoin(Unit, Measurement.unit_id == Unit.id)
+            .filter(Sample.site_id == site_id)
+            .filter(SamplingEvent.event_date.isnot(None))
+            .order_by(SamplingEvent.event_date.desc(), Measurement.id.desc())
+            .limit(recent_limit)
+            .all()
+        )
+
+        recent_measurements = []
+        for r in recent_rows:
+            value = r.value_numeric
+            if value is None:
+                value = r.value_text
+            if value is None:
+                value = r.value_boolean
+            if value is None:
+                value = r.value_date.isoformat() if r.value_date else None
+            recent_measurements.append(
+                {
+                    "id": r.id,
+                    "measurement_code": r.measurement_code,
+                    "variable_id": r.variable_id,
+                    "variable_name": r.variable_name,
+                    "value": value,
+                    "unit": r.unit_symbol,
+                    "event_date": r.event_date,
+                }
+            )
 
         is_active = bool(row.measurement_count and row.measurement_count > 0)
         return SiteMapDetail(
@@ -356,14 +400,15 @@ async def get_map_site_detail(site_id: int):
             admin_1=row.admin_1,
             admin_2=row.admin_2,
             admin_3=row.admin_3,
+            altitude_m=row.altitude_m,
             latitude=float(row.latitude) if row.latitude is not None else None,
             longitude=float(row.longitude) if row.longitude is not None else None,
-            status="active" if is_active else "inactive",
             measurement_count=int(row.measurement_count or 0),
             last_event_date=row.last_event_date,
             last_updated=row.last_updated,
             attributes=attributes,
             recent_variables=recent_variables,
+            recent_measurements=recent_measurements,
         )
     except HTTPException:
         raise
@@ -387,7 +432,6 @@ async def get_map_site_attributes(site_id: int):
 @router.get("/export")
 async def export_map_sites(
     project_id: Optional[int] = Query(None),
-    status: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
     bbox: Optional[str] = Query(None),
     north: Optional[float] = Query(None),
@@ -400,7 +444,6 @@ async def export_map_sites(
         rows = _apply_site_filters(
             _site_base_query(db),
             project_id=project_id,
-            status=status,
             search=search,
             bbox=bbox,
             north=north,
@@ -419,7 +462,6 @@ async def export_map_sites(
                 "project_name",
                 "latitude",
                 "longitude",
-                "status",
                 "measurement_count",
                 "last_updated",
                 "is_selected",
@@ -437,7 +479,6 @@ async def export_map_sites(
                     "project_name": row.project_name,
                     "latitude": float(row.latitude) if row.latitude is not None else None,
                     "longitude": float(row.longitude) if row.longitude is not None else None,
-                    "status": "active" if is_active else "inactive",
                     "measurement_count": int(row.measurement_count or 0),
                     "last_event_date": row.last_event_date.isoformat() if row.last_event_date else None,
                     "last_updated": row.last_updated.isoformat() if row.last_updated else None,

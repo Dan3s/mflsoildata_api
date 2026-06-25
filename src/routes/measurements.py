@@ -1,10 +1,11 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import List
 from sqlalchemy.orm import Session, joinedload
 from mflsoildata_orm.database import SessionLocal
 from mflsoildata_orm.models.measurement import Measurement as MeasurementModel
 from mflsoildata_orm.models.sample import Sample as SampleModel
 from schemas.measurements import MeasurementRead, MeasurementCreate
+from dependencies.auth import require_editor
 
 router = APIRouter(prefix="/measurements", tags=["Measurements"])
 
@@ -85,7 +86,7 @@ async def get_measurement(measurement_id: int):
         db.close()
 
 
-@router.post("/", response_model=MeasurementRead)
+@router.post("/", response_model=MeasurementRead, dependencies=[Depends(require_editor)])
 async def create_measurement(measurement: MeasurementCreate):
     """
     Create a new measurement

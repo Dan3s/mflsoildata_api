@@ -1,9 +1,10 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import List
 from sqlalchemy.orm import Session
 from mflsoildata_orm.database import SessionLocal
 from mflsoildata_orm.models.sample import Sample as SampleModel
 from schemas.samples import SampleRead, SampleCreate, SampleUpdate
+from dependencies.auth import require_editor
 
 router = APIRouter(prefix="/samples", tags=["Samples"])
 
@@ -54,7 +55,7 @@ async def get_sample(sample_id: int):
         db.close()
 
 
-@router.post("/", response_model=SampleRead)
+@router.post("/", response_model=SampleRead, dependencies=[Depends(require_editor)])
 async def create_sample(sample: SampleCreate):
     """
     Create a new sample
@@ -73,7 +74,7 @@ async def create_sample(sample: SampleCreate):
         db.close()
 
 
-@router.put("/{sample_id}", response_model=SampleRead)
+@router.put("/{sample_id}", response_model=SampleRead, dependencies=[Depends(require_editor)])
 async def update_sample(sample_id: int, sample: SampleUpdate):
     """
     Update a sample

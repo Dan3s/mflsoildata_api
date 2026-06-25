@@ -1,10 +1,11 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import List
 from sqlalchemy.orm import Session
 from mflsoildata_orm.database import SessionLocal
 from mflsoildata_orm.models.site import Site as SiteModel
 from schemas.sites import SiteRead, SiteCreate, SiteUpdate
 from sqlalchemy import func
+from dependencies.auth import require_editor
 
 router = APIRouter(prefix="/sites", tags=["Sites"])
 
@@ -53,7 +54,7 @@ async def get_site(site_id: int):
         db.close()
 
 
-@router.post("/", response_model=SiteRead)
+@router.post("/", response_model=SiteRead, dependencies=[Depends(require_editor)])
 async def create_site(site: SiteCreate):
     """
     Create a new site with coordinates
@@ -83,7 +84,7 @@ async def create_site(site: SiteCreate):
         db.close()
 
 
-@router.put("/{site_id}", response_model=SiteRead)
+@router.put("/{site_id}", response_model=SiteRead, dependencies=[Depends(require_editor)])
 async def update_site(site_id: int, site: SiteUpdate):
     """
     Update a site

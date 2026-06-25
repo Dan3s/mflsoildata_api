@@ -1,4 +1,8 @@
-from datetime import date
+# Aliased: the DashboardRecord field is named `date`, which would shadow the
+# `date` type. In an annotated assignment (`date: Optional[date] = None`) Python
+# binds the value before evaluating the annotation, so `date` would resolve to
+# None and Pydantic would reject real dates. The alias avoids that collision.
+from datetime import date as date_type
 from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict
@@ -51,7 +55,7 @@ class DashboardRecord(BaseModel):
     variable_name: str
     value: Any = None
     unit: Optional[str] = None
-    date: Optional[date] = None
+    date: Optional[date_type] = None
     laboratory: Optional[str] = None
     status: Optional[str] = None
 

@@ -1,9 +1,10 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import List, Optional
 from sqlalchemy.orm import Session
 from mflsoildata_orm.database import SessionLocal
 from mflsoildata_orm.models.project import Project as ProjectModel
 from schemas.projects import ProjectRead, ProjectCreate, ProjectUpdate
+from dependencies.auth import require_admin, require_editor
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
 
@@ -53,7 +54,7 @@ async def get_project(project_id: int):
         db.close()
 
 
-@router.post("/", response_model=ProjectRead)
+@router.post("/", response_model=ProjectRead, dependencies=[Depends(require_editor)])
 async def create_project(project: ProjectCreate):
     """
     Create a new project
@@ -72,7 +73,7 @@ async def create_project(project: ProjectCreate):
         db.close()
 
 
-@router.put("/{project_id}", response_model=ProjectRead)
+@router.put("/{project_id}", response_model=ProjectRead, dependencies=[Depends(require_editor)])
 async def update_project(project_id: int, project: ProjectUpdate):
     """
     Update a project
@@ -99,7 +100,7 @@ async def update_project(project_id: int, project: ProjectUpdate):
         db.close()
 
 
-@router.delete("/{project_id}")
+@router.delete("/{project_id}", dependencies=[Depends(require_admin)])
 async def delete_project(project_id: int):
     """
     Delete a project
