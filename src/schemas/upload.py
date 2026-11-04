@@ -20,6 +20,15 @@ class TemplateColumn(BaseModel):
     attribute_code: Optional[str] = None
 
 
+class ColumnMappingEntry(BaseModel):
+    """One row of an explicit, user-built column mapping (see the column-mapping
+    upload UI): "the column at this position in my file is this target field"."""
+
+    source_index: int  # 0-based column position in the uploaded file's header row
+    source_header: Optional[str] = None  # original header text; traceability only, not authoritative
+    target_id: Optional[str] = None  # our column id ("project_code", "attr:...", "var:..."); None/"" = ignore
+
+
 class TemplateColumnGroup(BaseModel):
     key: str
     label: str
@@ -38,6 +47,9 @@ class ValidationIssue(BaseModel):
     message: str
     severity: str  # error | warning
     code: str
+    # Set when ``row`` belongs to another sheet than the data one (the "New variables"
+    # sheet). ``row`` 0 means the problem concerns the file or a column, not a row.
+    sheet: Optional[str] = None
 
 
 class UploadSummary(BaseModel):
@@ -58,11 +70,19 @@ class ValidateResponse(BaseModel):
     warning_count: int
     summary: UploadSummary
     issues: List[ValidationIssue]
+    # Derived from the columns actually present in the file, so the metadata form
+    # can prefill "expected matrices/variables" instead of asking the user to
+    # retype what the spreadsheet already states.
+    detected_matrices: List[str] = []
+    detected_variables: List[str] = []
 
 
 class ImportRequest(BaseModel):
     upload_id: str
     ignore_warnings: bool = True
+    # FAIR metadata for the affected project, filled in the upload wizard. Staged
+    # with the submission and applied on approval (the project may not exist yet).
+    metadata: Optional[dict] = None
 
 
 class ImportResponse(BaseModel):
