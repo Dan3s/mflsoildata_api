@@ -267,6 +267,39 @@ pytest
 
 (`pytest.ini` points at `src/tests`; run from the repository root.)
 
+A few tests need PostgreSQL + PostGIS (`DATABASE_URL`). They plant their own rows inside a
+transaction that is always rolled back, so they work on an empty database and on one with real data,
+and they are skipped when the database cannot be reached. CI runs them against a PostGIS service.
+
+## Branching and CI/CD
+
+```
+develop ──push──▶ tests          (fast feedback while working)
+develop ──PR────▶ stage ──▶ tests on the PR
+stage   ──merge─▶ tests again ──green──▶ merged into main ──▶ release
+```
+
+- Work and commit on **`develop`**; every push is tested.
+- Open a **pull request from `develop` to `stage`**; it cannot be merged until the checks pass.
+- When the PR is merged, the checks run again on `stage`. If they pass, GitHub Actions merges that
+  exact commit into **`main`** and publishes a **release** with the next patch version (`vX.Y.Z`).
+  Nobody pushes to `main` by hand.
+
+The workflow is `.github/workflows/ci.yml`.
+
+**One-time repository setup**
+
+1. Create the `stage` branch from `develop` and push it (`main` already exists).
+2. *Settings → Actions → General → Workflow permissions*: choose **Read and write permissions**
+   (needed to merge into `main` and create releases).
+3. *Settings → Branches*: protect `stage` and require the **test** check before merging.
+4. If `main` is protected too, create a token that is allowed to push to it and save it as the
+   repository secret **`PROMOTE_TOKEN`** (otherwise the default `GITHUB_TOKEN` is used).
+5. The API installs the ORM package from its own repository, using the **same branch name**
+   (a PR to `stage` is tested against the ORM's `stage`). Merge an ORM change first when the API
+   depends on it. If the ORM repository is private, save a token that can read it as the secret
+   **`ORM_REPO_TOKEN`**.
+
 ## Adding a New Endpoint
 
 1. Add Pydantic schemas in `src/schemas/<feature>.py` (Base / Create / Read / Update, following

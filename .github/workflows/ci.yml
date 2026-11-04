@@ -1,0 +1,154 @@
+name: CI/CD API
+
+# develop  -> every push is tested (fast feedback while working).
+# PR to stage -> tested before it can be merged.
+# stage    -> tested again on the merged result; if green it is merged into main
+#             and a release is cut. Nothing else touches main.
+
+on:
+  push:
+    branches: [develop, stage]
+  pull_request:
+    branches: [stage]
+  workflow_dispatch:
+
+# A newer push to develop / a PR supersedes the run before it, but a promotion that is
+# already running on stage is never cancelled half-way.
+concurrency:
+  group: api-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/stage' }}
+
+permissions:
+  contents: read
+
+jobs:
+  # ------------------------------------------------------------------ TESTS ----
+  test:
+    name: Tests (Python + PostGIS)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_DB: soil_platform
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d soil_platform"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/soil_platform
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The API depends on the ORM package, which lives in its own repository. The same
+      # branch is used (a PR to stage tests against the ORM's stage), so an ORM change that
+      # the API needs must reach that branch first.
+      - name: Check out the ORM package
+        uses: actions/checkout@v4
+        with:
+          repository: Dan3s/mflsoildata_orm
+          ref: ${{ github.base_ref || github.ref_name }}
+          path: orm
+          # Only needed while the ORM repository is private (a token that can read it).
+          token: ${{ secrets.ORM_REPO_TOKEN || github.token }}
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            orm/pyproject.toml
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt ./orm
+
+      - name: Check that every module compiles
+        run: python -m compileall -q src
+
+      - name: Create the database schema
+        run: |
+          python -c "
+          import mflsoildata_orm.models
+          from mflsoildata_orm.database.base import create_tables
+          create_tables()"
+
+      - name: Run tests
+        run: pytest
+
+  # ---------------------------------------------------------------- PROMOTE ----
+  promote:
+    name: Merge stage into main
+    if: github.event_name == 'push' && github.ref == 'refs/heads/stage'
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: api-promote
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # If main is protected, use a token that may push to it (see README).
+          token: ${{ secrets.PROMOTE_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Merge the tested commit into main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B main origin/main
+          # The exact commit that passed the tests, not whatever stage points to by now.
+          git merge --no-ff "$GITHUB_SHA" -m "Promote stage to main (${GITHUB_SHA::7})"
+          git push origin main
+
+  # ---------------------------------------------------------------- RELEASE ----
+  release:
+    name: Create release
+    needs: promote
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Next version
+        id: version
+        run: |
+          last=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)
+          if [ -z "$last" ]; then
+            next="v0.1.0"
+          else
+            IFS=. read -r major minor patch <<< "${last#v}"
+            next="v${major}.${minor}.$((patch + 1))"
+          fi
+          echo "tag=$next" >> "$GITHUB_OUTPUT"
+
+      - name: Package
+        run: zip -r releaseAPI.zip src requirements.txt README.md
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" releaseAPI.zip \
+            --target main \
+            --title "Release ${{ steps.version.outputs.tag }}" \
+            --generate-notes
