@@ -37,6 +37,15 @@ class DashboardSummary(BaseModel):
     measurements: int
 
 
+class PublicSummary(BaseModel):
+    """Counts for the anonymous landing-page teaser — PUBLIC-access data only."""
+
+    datasets: int
+    sites: int
+    samples: int
+    countries: int
+
+
 class DashboardRecord(BaseModel):
     measurement_id: int
     measurement_code: Optional[str] = None
@@ -45,6 +54,8 @@ class DashboardRecord(BaseModel):
     project_name: str
     site_id: Optional[int] = None
     site_code: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
     sample_id: int
     sample_code: str
     sample_type_id: int
@@ -56,6 +67,9 @@ class DashboardRecord(BaseModel):
     value: Any = None
     unit: Optional[str] = None
     date: Optional[date_type] = None
+    depth_from: Optional[float] = None
+    depth_to: Optional[float] = None
+    depth_cm: Optional[float] = None
     laboratory: Optional[str] = None
     status: Optional[str] = None
 
@@ -65,3 +79,10 @@ class DashboardRecordsResponse(BaseModel):
     total: int
     skip: int
     limit: int
+
+
+class AgrovocTerm(BaseModel):
+    """A concept label from FAO's AGROVOC thesaurus."""
+
+    label: str
+    uri: Optional[str] = None

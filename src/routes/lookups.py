@@ -3,23 +3,71 @@ from typing import List, Optional
 from sqlalchemy import or_
 from mflsoildata_orm.database import SessionLocal
 from mflsoildata_orm.enums import Matrix, ValueType
-from mflsoildata_orm.models import Lab, Measurement, Project, Sample, SampleType, SamplingEvent, Site, Unit, Variable
-from schemas.lookups import LookupItem, MatrixItem, VariableLookupItem
+from mflsoildata_orm.models import Lab, Measurement, Project, ProjectMetadata, Sample, SampleType, SamplingEvent, Site, Unit, Variable
+from schemas.lookups import AgrovocTerm, LookupItem, MatrixItem, VariableLookupItem
 from schemas.variables import VariableCreate, VariableRead
+from services.agrovoc import search as agrovoc_search
 from services.etl import normalize_code
-from dependencies.auth import require_editor
+from dependencies.auth import CurrentUser, get_current_user, require_database_editor
+from dependencies.access import accessible_project_ids
 
 router = APIRouter(tags=["Lookups"])
+
+
+@router.get("/institutions/options", response_model=List[LookupItem])
+async def get_institution_options():
+    """Institutions that own data, taken from the datasets' `data_source` field.
+
+    Used to filter data by the organisation responsible for it. Ids are positional
+    because an institution is a plain name here, not a catalogue entity.
+    """
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(ProjectMetadata.data_source)
+            .filter(ProjectMetadata.data_source.isnot(None), ProjectMetadata.data_source != "")
+            .distinct()
+            .order_by(ProjectMetadata.data_source.asc())
+            .all()
+        )
+        return [LookupItem(id=i + 1, label=name) for i, (name,) in enumerate(rows)]
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    finally:
+        db.close()
+
+
+@router.get("/lookups/agrovoc", response_model=List[AgrovocTerm])
+async def agrovoc_keywords(
+    q: str = Query(..., min_length=2, description="Prefix of the keyword (min 2 chars)"),
+    lang: str = Query("en", description="'en' or 'es'"),
+    limit: int = Query(10, ge=1, le=25),
+):
+    """Keyword suggestions from FAO's AGROVOC thesaurus.
+
+    Returns an empty list (never an error) if AGROVOC is unreachable, so the
+    metadata form degrades to plain free-text entry instead of breaking.
+    """
+    return agrovoc_search(q, lang, limit)
 
 VALID_VALUE_TYPES = {item.value for item in ValueType}
 VALID_MATRICES = {item.value for item in Matrix}
 
 
 @router.get("/projects/options", response_model=List[LookupItem])
-async def get_project_options():
+async def get_project_options(user: CurrentUser = Depends(get_current_user)):
+    """Projects as {id, label} options, for *data* pickers and filters (map,
+    visualization, download, dashboard) — filtered by access_level so a
+    project the caller can't see data for isn't offered as if it had any.
+    The dataset catalogue lists every project regardless (FAIR A2 metadata),
+    via /projects/catalogue, not this endpoint."""
     db = SessionLocal()
     try:
-        projects = db.query(Project).order_by(Project.name.asc()).all()
+        query = db.query(Project)
+        allowed = accessible_project_ids(db, user)
+        if allowed is not None:
+            query = query.filter(Project.id.in_(allowed))
+        projects = query.order_by(Project.name.asc()).all()
         return [LookupItem(id=project.id, label=project.name) for project in projects]
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
@@ -29,6 +77,7 @@ async def get_project_options():
 
 @router.get("/projects/summary")
 async def get_project_summary():
+    """Platform-wide counts: projects, sites, samples and measurements."""
     db = SessionLocal()
     try:
         total_projects = db.query(Project).count()
@@ -49,6 +98,7 @@ async def get_project_summary():
 
 @router.get("/sites/options", response_model=List[LookupItem])
 async def get_site_options(project_id: Optional[int] = Query(None)):
+    """Sites as {id, label} options, optionally narrowed to one project."""
     db = SessionLocal()
     try:
         query = db.query(Site)
@@ -64,6 +114,7 @@ async def get_site_options(project_id: Optional[int] = Query(None)):
 
 @router.get("/sample-types", response_model=List[LookupItem])
 async def get_sample_types():
+    """Sample types (soil, leaf, grain...) as {id, label} options."""
     db = SessionLocal()
     try:
         sample_types = db.query(SampleType).order_by(SampleType.name.asc()).all()
@@ -76,6 +127,7 @@ async def get_sample_types():
 
 @router.get("/matrices", response_model=List[MatrixItem])
 async def get_matrices():
+    """Matrices the platform recognises (SOIL, LEAF, GRAIN, SOIL_PROFILE, SOIL_HORIZON)."""
     return [MatrixItem(code=item.value, label=item.value.replace("_", " ").title()) for item in Matrix]
 
 
@@ -86,6 +138,9 @@ async def get_variables(
     value_type: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
 ):
+    """Catalogue of measurable variables, filterable by matrix, domain, value type or free
+    text.
+    """
     db = SessionLocal()
     try:
         query = db.query(Variable)
@@ -130,6 +185,7 @@ async def get_variable_options(
     value_type: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
 ):
+    """Variables as {id, label} options; narrow to those actually measured in a project."""
     db = SessionLocal()
     try:
         query = db.query(Variable)
@@ -156,14 +212,22 @@ async def get_variable_options(
                 )
             )
         variables = query.distinct().order_by(Variable.name.asc()).all()
-        return [LookupItem(id=variable.id, label=variable.name) for variable in variables]
+        # Disambiguate variables that share a name across matrices (e.g. "Ba Total
+        # (mg/kg)" in SOIL / LEAF / GRAIN) by appending the matrix to the label.
+        return [
+            LookupItem(
+                id=variable.id,
+                label=f"{variable.name} — {variable.matrix}" if variable.matrix else variable.name,
+            )
+            for variable in variables
+        ]
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     finally:
         db.close()
 
 
-@router.post("/variables", response_model=VariableRead, status_code=201, dependencies=[Depends(require_editor)])
+@router.post("/variables", response_model=VariableRead, status_code=201, dependencies=[Depends(require_database_editor)])
 async def create_variable(payload: VariableCreate = Body(...)):
     """Create a new variable in the controlled catalog.
 
@@ -190,7 +254,7 @@ async def create_variable(payload: VariableCreate = Body(...)):
         variable = Variable(
             variable_code=code,
             name=payload.name,
-            domain=payload.domain or "custom",
+            domain=normalize_code(payload.domain) or "CUSTOM",
             matrix=payload.matrix,
             value_type=payload.value_type,
             default_unit_id=payload.default_unit_id,
@@ -240,8 +304,22 @@ async def get_variable_domains():
         db.close()
 
 
+@router.get("/countries", response_model=List[str])
+async def get_countries():
+    """Distinct site countries, for the dashboard and map filters (RF24 / RF29)."""
+    db = SessionLocal()
+    try:
+        rows = db.query(Site.country).filter(Site.country.isnot(None)).distinct().all()
+        return sorted({row[0] for row in rows if row[0]})
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    finally:
+        db.close()
+
+
 @router.get("/measurement-statuses", response_model=List[LookupItem])
 async def get_measurement_statuses():
+    """Quality statuses a measurement can hold, as {id, label} options."""
     return [
         LookupItem(id=1, label="Pendiente"),
         LookupItem(id=2, label="Validado"),
@@ -252,6 +330,7 @@ async def get_measurement_statuses():
 
 @router.get("/laboratories", response_model=List[LookupItem])
 async def get_laboratories(search: Optional[str] = Query(None)):
+    """Laboratories that analysed samples, as {id, label} options."""
     db = SessionLocal()
     try:
         query = db.query(Lab)
