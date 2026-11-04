@@ -27,13 +27,15 @@ jobs:
     name: Tests (Python + PostGIS)
     runs-on: ubuntu-latest
 
+    # The database password exists only for this run's throwaway container and is derived from the
+    # run id, so no password is spelled out in the repository.
     services:
       postgres:
         image: postgis/postgis:16-3.4
         env:
           POSTGRES_DB: soil_platform
           POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
+          POSTGRES_PASSWORD: ci-${{ github.run_id }}
         ports:
           - 5432:5432
         options: >-
@@ -43,7 +45,7 @@ jobs:
           --health-retries 10
 
     env:
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/soil_platform
+      DATABASE_URL: postgresql://postgres:ci-${{ github.run_id }}@localhost:5432/soil_platform
 
     steps:
       - uses: actions/checkout@v4
