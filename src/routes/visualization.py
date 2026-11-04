@@ -4,11 +4,13 @@ from io import StringIO
 from math import sqrt
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from sqlalchemy import DateTime, cast, func
 from sqlalchemy.orm import aliased
 
+from dependencies.auth import CurrentUser, get_current_user, get_optional_user
+from dependencies.access import accessible_project_ids
 from mflsoildata_orm.database import SessionLocal
 from mflsoildata_orm.models import (
     Lab,
@@ -283,6 +285,13 @@ def _build_correlation(
     return CorrelationResponse(points=points, correlation=correlation)
 
 
+def _guard_project(db, user, project_id: int) -> None:
+    """403 if the user cannot see this project's data (privacy enforcement)."""
+    allowed = accessible_project_ids(db, user)
+    if allowed is not None and project_id not in allowed:
+        raise HTTPException(status_code=403, detail="No access to this project's data")
+
+
 @router.get("/timeseries", response_model=TimeSeriesResponse)
 async def get_timeseries(
     project_id: int = Query(..., ge=1),
@@ -294,9 +303,12 @@ async def get_timeseries(
     aggregation: str = Query("avg"),
     period: str = Query("month"),
     matrix: Optional[str] = Query(None),
+    user: CurrentUser = Depends(get_current_user),
 ):
+    """Values of one or more variables over time for a project, ready to plot as a series."""
     db = SessionLocal()
     try:
+        _guard_project(db, user, project_id)
         return _build_timeseries(
             db,
             project_id=project_id,
@@ -327,9 +339,14 @@ async def get_by_site(
     date_to: Optional[date] = Query(None),
     aggregation: str = Query("avg"),
     matrix: Optional[str] = Query(None),
+    user: CurrentUser = Depends(get_current_user),
 ):
+    """Values aggregated per site, for comparing sites within a project. A second variable
+    can be requested to plot alongside.
+    """
     db = SessionLocal()
     try:
+        _guard_project(db, user, project_id)
         return _build_by_site(
             db,
             project_id=project_id,
@@ -358,9 +375,14 @@ async def get_correlation(
     date_from: Optional[date] = Query(None),
     date_to: Optional[date] = Query(None),
     matrix: Optional[str] = Query(None),
+    user: CurrentUser = Depends(get_current_user),
 ):
+    """Paired values of two variables on the same samples, for a scatter plot and its
+    correlation.
+    """
     db = SessionLocal()
     try:
+        _guard_project(db, user, project_id)
         return _build_correlation(
             db,
             project_id=project_id,
@@ -394,9 +416,14 @@ async def export_visualization_data(
     aggregation: str = Query("avg"),
     period: str = Query("month"),
     matrix: Optional[str] = Query(None),
+    user: Optional[CurrentUser] = Depends(get_optional_user),
 ):
+    """The data behind a chart (`timeseries`, `by-site` or `correlation`) as a downloadable
+    file.
+    """
     db = SessionLocal()
     try:
+        _guard_project(db, user, project_id)
         buffer = StringIO()
         writer = DictWriter(buffer, fieldnames=[])
 

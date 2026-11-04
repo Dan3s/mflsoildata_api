@@ -9,6 +9,10 @@ class SiteMapItem(BaseModel):
     site_code: str
     project_id: int
     project_name: str
+    country: Optional[str] = None
+    admin_1: Optional[str] = None
+    admin_2: Optional[str] = None
+    altitude_m: Optional[float] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
     measurement_count: int
@@ -16,6 +20,9 @@ class SiteMapItem(BaseModel):
     last_updated: Optional[datetime] = None
     is_selected: bool = False
     is_active: bool = True
+    # Per-site mean of the selected "color by variable" (null when not requested
+    # or the site has no measurements for that variable).
+    color_value: Optional[float] = None
 
     model_config = ConfigDict(from_attributes=True)
 

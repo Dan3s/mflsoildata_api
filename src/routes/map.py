@@ -3,15 +3,18 @@ from datetime import date, datetime
 from io import StringIO
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
-from sqlalchemy import func, or_
+from sqlalchemy import func, nullslast, or_
 from sqlalchemy.orm import aliased
 
+from dependencies.auth import CurrentUser, get_current_user, get_optional_user
+from dependencies.access import accessible_project_ids, narrow, project_ids_by_institution
 from mflsoildata_orm.database import SessionLocal
 from mflsoildata_orm.models import (
     Measurement,
     Project,
+    ProjectMetadata,
     Sample,
     Site,
     SiteAttribute,
@@ -89,9 +92,24 @@ def _apply_site_filters(
     south: Optional[float] = None,
     east: Optional[float] = None,
     west: Optional[float] = None,
+    country: Optional[str] = None,
+    admin_1: Optional[str] = None,
+    admin_2: Optional[str] = None,
+    altitude_min: Optional[float] = None,
+    altitude_max: Optional[float] = None,
 ):
     if project_id is not None:
         query = query.filter(Site.project_id == project_id)
+    if country is not None:
+        query = query.filter(Site.country == country)
+    if admin_1 is not None:
+        query = query.filter(Site.admin_1 == admin_1)
+    if admin_2 is not None:
+        query = query.filter(Site.admin_2 == admin_2)
+    if altitude_min is not None:
+        query = query.filter(Site.altitude_m >= altitude_min)
+    if altitude_max is not None:
+        query = query.filter(Site.altitude_m <= altitude_max)
 
     bbox_values = _parse_bbox(bbox)
     if bbox_values:
@@ -189,7 +207,7 @@ def _recent_site_variables(db, site_id: int, limit: int = 5):
             Measurement.updated_at.label("updated_at"),
         )
         .join(Sample, Measurement.sample_id == Sample.id)
-        .join(SamplingEvent, Sample.event_id == SamplingEvent.id)
+        .outerjoin(SamplingEvent, Sample.event_id == SamplingEvent.id)
         .join(Variable, Measurement.variable_id == Variable.id)
         .outerjoin(Unit, Measurement.unit_id == Unit.id)
         .filter(Sample.site_id == site_id)
@@ -234,11 +252,30 @@ async def get_map_summary(
     south: Optional[float] = Query(None),
     east: Optional[float] = Query(None),
     west: Optional[float] = Query(None),
+    country: Optional[str] = Query(None),
+    admin_1: Optional[str] = Query(None),
+    admin_2: Optional[str] = Query(None),
+    altitude_min: Optional[float] = Query(None),
+    altitude_max: Optional[float] = Query(None),
+    user: CurrentUser = Depends(get_current_user),
+    institution: Optional[str] = Query(None, description="Institution that owns the data (dataset data_source)"),
 ):
+    """Counts for the current map view, honouring the same filters and bounding box as the
+    site list.
+    """
     db = SessionLocal()
     try:
         query = _site_base_query(db)
-        query = _apply_site_filters(query, project_id=project_id, search=search, bbox=bbox, north=north, south=south, east=east, west=west)
+        query = _apply_site_filters(
+            query, project_id=project_id, search=search, bbox=bbox, north=north, south=south,
+            east=east, west=west, country=country, admin_1=admin_1, admin_2=admin_2,
+            altitude_min=altitude_min, altitude_max=altitude_max,
+        )
+        allowed = accessible_project_ids(db, user)
+        # Same shape as the access filter, so both narrow the same project set.
+        allowed = narrow(allowed, project_ids_by_institution(db, institution))
+        if allowed is not None:
+            query = query.filter(Site.project_id.in_(allowed))
         rows = query.all()
         total_sites = len(rows)
         active_sites = sum(1 for row in rows if row.measurement_count and row.measurement_count > 0)
@@ -290,12 +327,44 @@ async def get_map_sites(
     south: Optional[float] = Query(None),
     east: Optional[float] = Query(None),
     west: Optional[float] = Query(None),
+    country: Optional[str] = Query(None),
+    admin_1: Optional[str] = Query(None),
+    admin_2: Optional[str] = Query(None),
+    altitude_min: Optional[float] = Query(None),
+    altitude_max: Optional[float] = Query(None),
+    color_variable_id: Optional[int] = Query(None, description="Color markers by this variable's per-site mean."),
+    user: CurrentUser = Depends(get_current_user),
+    institution: Optional[str] = Query(None, description="Institution that owns the data (dataset data_source)"),
 ):
+    """Sites with coordinates for the map, filtered by project, text or a geographic
+    bounding box.
+    """
     db = SessionLocal()
     try:
         query = _site_base_query(db)
-        query = _apply_site_filters(query, project_id=project_id, search=search, bbox=bbox, north=north, south=south, east=east, west=west)
+        query = _apply_site_filters(
+            query, project_id=project_id, search=search, bbox=bbox, north=north, south=south,
+            east=east, west=west, country=country, admin_1=admin_1, admin_2=admin_2,
+            altitude_min=altitude_min, altitude_max=altitude_max,
+        )
+        allowed = accessible_project_ids(db, user)
+        # Same shape as the access filter, so both narrow the same project set.
+        allowed = narrow(allowed, project_ids_by_institution(db, institution))
+        if allowed is not None:
+            query = query.filter(Site.project_id.in_(allowed))
         rows = query.order_by(Site.site_code.asc()).all()
+
+        # Per-site mean of the "color by" variable (one extra grouped query).
+        color_by_site: dict = {}
+        if color_variable_id is not None:
+            for sid, avg_val in (
+                db.query(Sample.site_id, func.avg(Measurement.value_numeric))
+                .join(Measurement, Measurement.sample_id == Sample.id)
+                .filter(Measurement.variable_id == color_variable_id, Measurement.value_numeric.isnot(None))
+                .group_by(Sample.site_id)
+                .all()
+            ):
+                color_by_site[sid] = float(avg_val) if avg_val is not None else None
 
         results = []
         for row in rows:
@@ -306,6 +375,10 @@ async def get_map_sites(
                     site_code=row.site_code,
                     project_id=row.project_id,
                     project_name=row.project_name,
+                    country=row.country,
+                    admin_1=row.admin_1,
+                    admin_2=row.admin_2,
+                    altitude_m=float(row.altitude_m) if row.altitude_m is not None else None,
                     latitude=float(row.latitude) if row.latitude is not None else None,
                     longitude=float(row.longitude) if row.longitude is not None else None,
                     measurement_count=int(row.measurement_count or 0),
@@ -313,6 +386,7 @@ async def get_map_sites(
                     last_updated=row.last_updated,
                     is_selected=False,
                     is_active=is_active,
+                    color_value=color_by_site.get(row.site_id),
                 )
             )
         return results
@@ -324,15 +398,184 @@ async def get_map_sites(
         db.close()
 
 
+@router.get("/regions")
+async def get_map_regions(
+    country: Optional[str] = Query(None),
+    admin_1: Optional[str] = Query(None),
+    user: CurrentUser = Depends(get_current_user),
+    institution: Optional[str] = Query(None, description="Institution that owns the data (dataset data_source)"),
+):
+    """Distinct admin_1 (departments/regions) and admin_2 (municipalities) for the
+    map filters — admin_2 narrowed to ``admin_1`` — within accessible projects."""
+    db = SessionLocal()
+    try:
+        allowed = accessible_project_ids(db, user)
+        # Same shape as the access filter, so both narrow the same project set.
+        allowed = narrow(allowed, project_ids_by_institution(db, institution))
+
+        def _base():
+            q = db.query(Site)
+            if allowed is not None:
+                q = q.filter(Site.project_id.in_(allowed))
+            if country:
+                q = q.filter(Site.country == country)
+            return q
+
+        a1 = _base().with_entities(Site.admin_1).filter(Site.admin_1.isnot(None), Site.admin_1 != "").distinct()
+        a2q = _base().with_entities(Site.admin_2).filter(Site.admin_2.isnot(None), Site.admin_2 != "")
+        if admin_1:
+            a2q = a2q.filter(Site.admin_1 == admin_1)
+        return {
+            "admin_1": sorted({r[0] for r in a1.all()}),
+            "admin_2": sorted({r[0] for r in a2q.distinct().all()}),
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    finally:
+        db.close()
+
+
+@router.get("/facets")
+async def get_map_facets(
+    project_id: Optional[int] = Query(None),
+    country: Optional[str] = Query(None),
+    admin_1: Optional[str] = Query(None),
+    admin_2: Optional[str] = Query(None),
+    user: CurrentUser = Depends(get_current_user),
+    institution: Optional[str] = Query(None, description="Institution that owns the data (dataset data_source)"),
+):
+    """What each map selector can offer, given what the others are set to (cascading filters).
+
+    Every list is computed with all the *other* filters applied and its own one left out, so
+    picking a country narrows the projects, picking a project narrows the countries, and
+    neither list can ever shrink to the value already chosen. Counts are numbers of sites.
+    """
+    db = SessionLocal()
+    try:
+        access = accessible_project_ids(db, user)
+        by_institution = project_ids_by_institution(db, institution)
+
+        def sites(*, skip=(), with_institution=True):
+            q = db.query(Site)
+            allowed = narrow(access, by_institution) if with_institution else access
+            if allowed is not None:
+                q = q.filter(Site.project_id.in_(allowed))
+            if project_id is not None and "project" not in skip:
+                q = q.filter(Site.project_id == project_id)
+            if country and "country" not in skip:
+                q = q.filter(Site.country == country)
+            if admin_1 and "admin_1" not in skip:
+                q = q.filter(Site.admin_1 == admin_1)
+            if admin_2 and "admin_2" not in skip:
+                q = q.filter(Site.admin_2 == admin_2)
+            return q
+
+        projects = (
+            sites(skip=("project",))
+            .with_entities(Site.project_id, func.count(Site.id))
+            .group_by(Site.project_id)
+            .all()
+        )
+        countries = (
+            sites(skip=("country", "admin_1", "admin_2"))
+            .with_entities(Site.country, func.count(Site.id))
+            .filter(Site.country.isnot(None), Site.country != "")
+            .group_by(Site.country)
+            .all()
+        )
+        scope_projects = {
+            r[0] for r in sites(with_institution=False).with_entities(Site.project_id).distinct().all()
+        }
+        institutions = sorted(
+            {
+                r[0].strip()
+                for r in db.query(ProjectMetadata.data_source)
+                .filter(ProjectMetadata.project_id.in_(scope_projects), ProjectMetadata.data_source.isnot(None))
+                .all()
+                if r[0] and r[0].strip()
+            }
+        )
+        return {
+            "projects": [{"id": pid, "count": n} for pid, n in sorted(projects)],
+            "countries": [{"value": c, "count": n} for c, n in sorted(countries)],
+            "institutions": institutions,
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    finally:
+        db.close()
+
+
+@router.get("/variables")
+async def get_map_variables(
+    project_id: Optional[int] = Query(None),
+    country: Optional[str] = Query(None),
+    admin_1: Optional[str] = Query(None),
+    admin_2: Optional[str] = Query(None),
+    altitude_min: Optional[float] = Query(None),
+    altitude_max: Optional[float] = Query(None),
+    user: CurrentUser = Depends(get_current_user),
+    institution: Optional[str] = Query(None, description="Institution that owns the data (dataset data_source)"),
+):
+    """Numeric variables actually measured within the current map scope, for the
+    'color by variable' picker — so only relevant variables are offered."""
+    db = SessionLocal()
+    try:
+        allowed = accessible_project_ids(db, user)
+        # Same shape as the access filter, so both narrow the same project set.
+        allowed = narrow(allowed, project_ids_by_institution(db, institution))
+        q = (
+            db.query(Variable.id, Variable.name, Variable.matrix)
+            .join(Measurement, Measurement.variable_id == Variable.id)
+            .join(Sample, Measurement.sample_id == Sample.id)
+            .join(Site, Sample.site_id == Site.id)
+            .filter(Measurement.value_numeric.isnot(None))
+        )
+        if allowed is not None:
+            q = q.filter(Site.project_id.in_(allowed))
+        if project_id is not None:
+            q = q.filter(Site.project_id == project_id)
+        if country is not None:
+            q = q.filter(Site.country == country)
+        if admin_1 is not None:
+            q = q.filter(Site.admin_1 == admin_1)
+        if admin_2 is not None:
+            q = q.filter(Site.admin_2 == admin_2)
+        if altitude_min is not None:
+            q = q.filter(Site.altitude_m >= altitude_min)
+        if altitude_max is not None:
+            q = q.filter(Site.altitude_m <= altitude_max)
+
+        labels: dict = {}
+        for vid, name, matrix in q.distinct().all():
+            labels[vid] = f"{name} — {matrix}" if matrix else name
+        return [
+            {"id": vid, "label": label}
+            for vid, label in sorted(labels.items(), key=lambda kv: kv[1].lower())
+        ]
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    finally:
+        db.close()
+
+
 @router.get("/sites/{site_id}", response_model=SiteMapDetail)
 async def get_map_site_detail(
     site_id: int,
     recent_limit: int = Query(5, ge=1, le=50),
     recent_only: bool = Query(False),
+    user: CurrentUser = Depends(get_current_user),
+    institution: Optional[str] = Query(None, description="Institution that owns the data (dataset data_source)"),
 ):
+    """One site with its recent measurements, for the map's detail panel."""
     db = SessionLocal()
     try:
         query = _apply_site_filters(_site_base_query(db), project_id=None).filter(Site.id == site_id)
+        allowed = accessible_project_ids(db, user)
+        # Same shape as the access filter, so both narrow the same project set.
+        allowed = narrow(allowed, project_ids_by_institution(db, institution))
+        if allowed is not None:
+            query = query.filter(Site.project_id.in_(allowed))
         row = query.one_or_none()
         if not row:
             raise HTTPException(status_code=404, detail="Site not found")
@@ -359,12 +602,13 @@ async def get_map_site_detail(
                 Measurement.updated_at.label("updated_at"),
             )
             .join(Sample, Measurement.sample_id == Sample.id)
-            .join(SamplingEvent, Sample.event_id == SamplingEvent.id)
+            .outerjoin(SamplingEvent, Sample.event_id == SamplingEvent.id)
             .join(Variable, Measurement.variable_id == Variable.id)
             .outerjoin(Unit, Measurement.unit_id == Unit.id)
             .filter(Sample.site_id == site_id)
-            .filter(SamplingEvent.event_date.isnot(None))
-            .order_by(SamplingEvent.event_date.desc(), Measurement.id.desc())
+            # Include measurements even when the event has no date (they'd be
+            # dropped otherwise); undated ones sort last.
+            .order_by(nullslast(SamplingEvent.event_date.desc()), Measurement.id.desc())
             .limit(recent_limit)
             .all()
         )
@@ -419,10 +663,19 @@ async def get_map_site_detail(
 
 
 @router.get("/sites/{site_id}/attributes", response_model=list[SiteAttributeItem])
-async def get_map_site_attributes(site_id: int):
+async def get_map_site_attributes(site_id: int, user: CurrentUser = Depends(get_current_user)):
+    """Latest value of each attribute recorded for a site (slope, land use, texture...)."""
     db = SessionLocal()
     try:
+        site = db.query(Site).filter(Site.id == site_id).first()
+        if not site:
+            raise HTTPException(status_code=404, detail="Site not found")
+        allowed = accessible_project_ids(db, user)
+        if allowed is not None and site.project_id not in allowed:
+            raise HTTPException(status_code=404, detail="Site not found")
         return _latest_site_attributes(db, site_id)
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     finally:
@@ -438,10 +691,18 @@ async def export_map_sites(
     south: Optional[float] = Query(None),
     east: Optional[float] = Query(None),
     west: Optional[float] = Query(None),
+    country: Optional[str] = Query(None),
+    admin_1: Optional[str] = Query(None),
+    admin_2: Optional[str] = Query(None),
+    altitude_min: Optional[float] = Query(None),
+    altitude_max: Optional[float] = Query(None),
+    user: Optional[CurrentUser] = Depends(get_optional_user),
+    institution: Optional[str] = Query(None, description="Institution that owns the data (dataset data_source)"),
 ):
+    """The sites currently shown on the map, as a downloadable file."""
     db = SessionLocal()
     try:
-        rows = _apply_site_filters(
+        query = _apply_site_filters(
             _site_base_query(db),
             project_id=project_id,
             search=search,
@@ -450,7 +711,18 @@ async def export_map_sites(
             south=south,
             east=east,
             west=west,
-        ).order_by(Site.site_code.asc()).all()
+            country=country,
+            admin_1=admin_1,
+            admin_2=admin_2,
+            altitude_min=altitude_min,
+            altitude_max=altitude_max,
+        )
+        allowed = accessible_project_ids(db, user)
+        # Same shape as the access filter, so both narrow the same project set.
+        allowed = narrow(allowed, project_ids_by_institution(db, institution))
+        if allowed is not None:
+            query = query.filter(Site.project_id.in_(allowed))
+        rows = query.order_by(Site.site_code.asc()).all()
 
         buffer = StringIO()
         writer = DictWriter(
