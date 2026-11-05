@@ -1,6 +1,6 @@
 from typing import Optional
 from pydantic import BaseModel
-from datetime import datetime
+from datetime import date, datetime
 
 
 class MeasurementBase(BaseModel):
@@ -22,6 +22,7 @@ class MeasurementCreate(MeasurementBase):
 class MeasurementRead(MeasurementBase):
     id: int
     sample_id: int
+    event_date: Optional[date] = None
     value_numeric: Optional[float] = None
     value_text: Optional[str] = None
     value_boolean: Optional[bool] = None

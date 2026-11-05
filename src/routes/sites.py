@@ -1,10 +1,12 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import List
 from sqlalchemy.orm import Session
 from mflsoildata_orm.database import SessionLocal
 from mflsoildata_orm.models.site import Site as SiteModel
 from schemas.sites import SiteRead, SiteCreate, SiteUpdate
 from sqlalchemy import func
+from dependencies.auth import CurrentUser, get_current_user, require_editor
+from dependencies.access import accessible_project_ids
 
 router = APIRouter(prefix="/sites", tags=["Sites"])
 
@@ -14,12 +16,16 @@ async def get_sites(
     project_id: int = Query(..., description="Project ID"),
     skip: int = Query(0, ge=0),
     limit: int = Query(10, ge=1, le=100),
+    user: CurrentUser = Depends(get_current_user),
 ):
     """
     Get all sites for a project
     """
     db = SessionLocal()
     try:
+        allowed = accessible_project_ids(db, user)
+        if allowed is not None and project_id not in allowed:
+            return []
         sites = (
             db.query(SiteModel)
             .filter(SiteModel.project_id == project_id)
@@ -35,7 +41,7 @@ async def get_sites(
 
 
 @router.get("/{site_id}", response_model=SiteRead)
-async def get_site(site_id: int):
+async def get_site(site_id: int, user: CurrentUser = Depends(get_current_user)):
     """
     Get a specific site by ID
     """
@@ -43,6 +49,9 @@ async def get_site(site_id: int):
     try:
         site = db.query(SiteModel).filter(SiteModel.id == site_id).first()
         if not site:
+            raise HTTPException(status_code=404, detail="Site not found")
+        allowed = accessible_project_ids(db, user)
+        if allowed is not None and site.project_id not in allowed:
             raise HTTPException(status_code=404, detail="Site not found")
         return site
     except HTTPException:
@@ -53,7 +62,7 @@ async def get_site(site_id: int):
         db.close()
 
 
-@router.post("/", response_model=SiteRead)
+@router.post("/", response_model=SiteRead, dependencies=[Depends(require_editor)])
 async def create_site(site: SiteCreate):
     """
     Create a new site with coordinates
@@ -83,7 +92,7 @@ async def create_site(site: SiteCreate):
         db.close()
 
 
-@router.put("/{site_id}", response_model=SiteRead)
+@router.put("/{site_id}", response_model=SiteRead, dependencies=[Depends(require_editor)])
 async def update_site(site_id: int, site: SiteUpdate):
     """
     Update a site
