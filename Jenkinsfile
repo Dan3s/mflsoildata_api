@@ -78,8 +78,16 @@ pipeline {
                         . ${env.CONDA_SH}
                         conda activate ${env.CONDA_ENV}
                         pip install -r requirements.txt
-                        # Always take the ORM as it is on its branch (pip reinstalls VCS requirements).
-                        pip install --upgrade ${env.ORM_REPO}
+                        # The ORM asks for "psycopg2", which pip would compile from source and this
+                        # server has no pg_config for that. psycopg2-binary (requirements.txt) already
+                        # provides the same module, so the ORM goes in without its dependencies, plus
+                        # the two it needs that requirements.txt does not list. It is always taken as it
+                        # is on its branch (pip reinstalls VCS requirements).
+                        pip install --upgrade --no-deps ${env.ORM_REPO}
+                        pip install "alembic>=1.18.2" "geoalchemy2>=0.15.2"
+                        # Fails here, not at start-up, if the ORM ever gains another dependency (the
+                        # placeholder URL only lets the import run; nothing connects to it).
+                        DATABASE_URL=postgresql://check:check@localhost:5432/check python -c "import mflsoildata_orm.models, mflsoildata_orm.migrations"
                     """
                 }
             }
