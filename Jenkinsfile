@@ -30,6 +30,7 @@ pipeline {
         CONDA_SH  = '/opt/miniforge3/etc/profile.d/conda.sh'
         CONDA_ENV = 'mplsoildata-backend'
         PM2_APP   = 'mfl_api'
+        NODE_ENV_NAME = 'mplsoildata-frontend'   // conda env that has node (pm2 needs it)
         API_PORT  = '8090'   // 8000 is taken by another app on this server
         // The API installs the shared ORM package from its own repository, same branch.
         ORM_REPO  = 'git+https://github.com/Dan3s/mflsoildata_orm@main'
@@ -119,6 +120,12 @@ pipeline {
                         conda activate ${env.CONDA_ENV}
                         export MFL_UVICORN="\$(which uvicorn)"
                         export MFL_API_PORT=${env.API_PORT}
+                        # pm2 is a Node program and this Python env has no node: borrow the one from
+                        # the frontend env, only for the pm2 commands (uvicorn is already an absolute path).
+                        if ! command -v node > /dev/null 2>&1; then
+                            NODE_BIN="\$(conda run -n ${env.NODE_ENV_NAME} which node)"
+                            export PATH="\$(dirname "\$NODE_BIN"):\$PATH"
+                        fi
                         # Shared server: never start on, or "verify" against, a port someone else uses.
                         if ss -ltn | grep -q ":${env.API_PORT} " && ! pm2 describe ${env.PM2_APP} > /dev/null 2>&1; then
                             echo "Port ${env.API_PORT} is already used by another process" >&2
