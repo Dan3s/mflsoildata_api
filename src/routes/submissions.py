@@ -178,6 +178,10 @@ def _review(
         # Approving is what publishes the data. It runs in the same transaction as
         # the status change, so a failed import leaves the submission PENDING
         # instead of marking it approved with nothing written.
+        # A submission tied to a dataset before approval adds data to one that already
+        # exists (a new dataset is only created by approving it).
+        is_extension = sub.project_id is not None
+
         if new_status == "APPROVED":
             try:
                 known_codes = {d.get("code") for d in (sub.new_variables or [])}
@@ -215,7 +219,11 @@ def _review(
                 sub.project_name = sub.project_name or affected[0].get("name")
                 # The ficha was filled at upload time, when the project did not
                 # exist yet. Now it does, so apply it (partial: only sent fields).
-                _apply_metadata(db, sub.project_id, sub.metadata_payload, sub.submitted_by_email)
+                # The uploader of a new dataset keeps access to it; someone adding data to a
+                # dataset that was already there is not put on its access list by doing so.
+                _apply_metadata(
+                    db, sub.project_id, sub.metadata_payload, None if is_extension else sub.submitted_by_email
+                )
 
         sub.status = new_status
         sub.reviewed_at = datetime.now(timezone.utc)

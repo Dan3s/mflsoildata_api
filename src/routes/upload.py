@@ -19,6 +19,7 @@ from mflsoildata_orm.database import SessionLocal
 from mflsoildata_orm.models import (
     DatasetSubmission,
     Measurement,
+    Project,
     Sample,
     SampleAttribute,
     SampleType,
@@ -178,6 +179,25 @@ async def get_template(
         db.close()
 
 
+def _project_mismatch_issues(rows: List[dict], expected_code: Optional[str]) -> List[dict]:
+    """One error per project code that is not the dataset the upload was meant for."""
+    if not expected_code:
+        return []
+    wrong: dict = {}
+    for row in rows:
+        code = etl.normalize_code(row.get("project_code"))
+        if code and code != expected_code:
+            wrong.setdefault(code, []).append(row.get("_row"))
+    return [
+        etl._value_issue(
+            found[0], "project_code", code,
+            f"Esta carga es para el dataset '{expected_code}', pero {len(found)} fila(s) usan '{code}'.",
+            "error", "PROJECT_MISMATCH",
+        )
+        for code, found in wrong.items()
+    ]
+
+
 @router.post("/validate", response_model=ValidateResponse, dependencies=[Depends(require_editor)])
 async def validate_upload(
     file: UploadFile = File(...),
@@ -187,6 +207,11 @@ async def validate_upload(
     ),
     header_row: Optional[int] = Form(
         None, description="1-based row number (blanks included) that holds the file's header."
+    ),
+    project_code: Optional[str] = Form(
+        None,
+        description="Code of an existing dataset this upload adds data to. Rows that leave the "
+        "project empty are filled with it; rows that name another one are errors.",
     ),
 ):
     """Parse and validate a filled file without writing to the DB (dry-run).
@@ -214,6 +239,17 @@ async def validate_upload(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
 
+        # Adding to an existing dataset: it must exist, and the file must stay inside it.
+        expected_code = None
+        if project_code:
+            expected_code = etl.normalize_code(project_code)
+            if not expected_code or not db.query(Project.id).filter(Project.code == expected_code).first():
+                raise HTTPException(status_code=422, detail=f"El dataset '{project_code}' no existe.")
+            for row in parsed.rows:
+                if not etl.normalize_code(row.get("project_code")):
+                    row["project_code"] = expected_code
+        project_issues = _project_mismatch_issues(parsed.rows, expected_code)
+
         # Variables the team defined in the template's "New variables" sheet:
         # checked against the catalog (and linked/flagged) before the columns resolve.
         new_variables, new_variable_issues = etl.process_new_variables(db, parsed)
@@ -224,7 +260,8 @@ async def validate_upload(
         # Uploads only add data: flag anything that already exists so the file is
         # corrected before it ever reaches a reviewer.
         conflicts = etl.find_existing_conflicts(db, parsed.rows, specs)
-        issues = new_variable_issues + column_issues + issues + conflicts
+        positional = etl.positional_issues(parsed, specs)
+        issues = project_issues + positional + new_variable_issues + column_issues + issues + conflicts
         if conflicts:
             valid_rows = max(valid_rows - len({c["row"] for c in conflicts}), 0)
 
@@ -314,6 +351,21 @@ async def import_upload(payload: ImportRequest = Body(...), user: CurrentUser = 
                 codes.append(code)
                 names[code] = (row.get("project_name") or "").strip() or code
 
+        # Adding to an existing dataset: it has to exist and be the only one in the file
+        # (validation already checks this; here it is re-checked because the client chose it).
+        target_project = None
+        if payload.project_code:
+            expected = etl.normalize_code(payload.project_code)
+            target_project = db.query(Project).filter(Project.code == expected).first() if expected else None
+            if target_project is None:
+                raise HTTPException(status_code=422, detail=f"El dataset '{payload.project_code}' no existe.")
+            if any(c != expected for c in codes):
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"La carga es para el dataset '{expected}', pero el archivo incluye otros proyectos.",
+                )
+            codes, names = [expected], {expected: target_project.name or expected}
+
         # Validate the ficha now (not at approval) so the uploader sees the error
         # while the form is still in front of them. QC fields stay off-limits here:
         # this endpoint is reachable by a plain editor.
@@ -335,7 +387,8 @@ async def import_upload(payload: ImportRequest = Body(...), user: CurrentUser = 
             metadata_payload = jsonable_encoder(meta.model_dump(exclude_unset=True))
 
         submission = DatasetSubmission(
-            project_id=None,
+            # NULL for a new dataset (created at approval); set when the data goes into an existing one.
+            project_id=target_project.id if target_project else None,
             metadata_payload=metadata_payload,
             project_code=codes[0] if codes else None,
             project_name=names.get(codes[0]) if codes else None,
@@ -373,6 +426,7 @@ async def import_upload(payload: ImportRequest = Body(...), user: CurrentUser = 
         etl.upload_store.pop(payload.upload_id)
 
         label = ", ".join(names.get(c, c) for c in codes) or "tu dataset"
+        extension_note = " (ampliación de un dataset existente)" if target_project else ""
 
         # Notify the submitter (best-effort; never blocks the submission).
         if user.email:
@@ -399,7 +453,7 @@ async def import_upload(payload: ImportRequest = Body(...), user: CurrentUser = 
                 send_email(
                     email,
                     f"Nuevo dataset pendiente de revisión — {label}",
-                    f"Se recibió un nuevo dataset «{label}» ({user.email or user.username}) "
+                    f"Se recibió un nuevo dataset «{label}»{extension_note} ({user.email or user.username}) "
                     f"que requiere revisión.{review_link}\n\n"
                     f"— Alliance Soil-GHG Database",
                 )

@@ -13,7 +13,11 @@ ACCESS_LEVELS = {"PUBLIC", "RESTRICTED", "PRIVATE", "EMBARGOED", "LICENSED", "CO
 QC_STATUSES = {"NOT_REVIEWED", "IN_REVIEW", "PASSED", "FAILED"}
 # Geometry a dataset describes. The platform stores point sites today; the other
 # values let a dataset declare coverage that is not a set of points.
-SPATIAL_DATA_TYPES = {"POINT", "LINE", "POLYGON", "RASTER"}
+SPATIAL_DATA_TYPES = {"POINT", "LINE", "POLYGON"}
+# How the soil was sampled: one composite sample for a whole farm, or an
+# individual sample taken at a single point. A dataset can hold both, so the
+# field is a list of these codes.
+SAMPLING_TYPES = {"FARM_COMPOSITE", "SINGLE_POINT"}
 
 # Dataverse's own "Subject" controlled vocabulary (citation.tsv), offered as
 # suggestions in the UI. Stored as free text (not validated): a dataset
@@ -86,6 +90,7 @@ class ProjectMetadataBase(BaseModel):
     temporal_coverage_end: Optional[date] = None
     spatial_coverage: Optional[str] = None
     spatial_data_type: Optional[str] = None
+    sampling_type: Optional[List[str]] = None
     expected_matrices: Optional[Any] = None
     expected_variables: Optional[str] = None
     sampling_design: Optional[str] = None
@@ -97,6 +102,8 @@ class ProjectMetadataBase(BaseModel):
     access_conditions: Optional[str] = None
     # Reusable / provenance
     data_source: Optional[str] = None
+    # Research group, within the source organization, that produced the data.
+    research_group: Optional[str] = None
     provenance: Optional[str] = None
     methodology: Optional[str] = None
     citation: Optional[str] = None
@@ -141,6 +148,19 @@ class ProjectMetadataBase(BaseModel):
         if v is not None and v not in SPATIAL_DATA_TYPES:
             raise ValueError(f"spatial_data_type must be one of {sorted(SPATIAL_DATA_TYPES)}")
         return v
+
+    @field_validator("sampling_type", mode="before")
+    @classmethod
+    def _validate_sampling_type(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, str):  # a single value is the same as a list of one
+            v = [v]
+        codes = list(dict.fromkeys(v))  # drop repeats, keep the order
+        bad = [c for c in codes if c not in SAMPLING_TYPES]
+        if bad:
+            raise ValueError(f"sampling_type values must be among {sorted(SAMPLING_TYPES)}, got {bad}")
+        return codes or None
 
     @field_validator("qc_status")
     @classmethod
