@@ -83,6 +83,9 @@ class ImportRequest(BaseModel):
     # FAIR metadata for the affected project, filled in the upload wizard. Staged
     # with the submission and applied on approval (the project may not exist yet).
     metadata: Optional[dict] = None
+    # Set when the upload adds data to a dataset that is already in the platform:
+    # every row must belong to it, and the submission is tied to it from the start.
+    project_code: Optional[str] = None
 
 
 class ImportResponse(BaseModel):
