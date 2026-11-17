@@ -28,6 +28,7 @@ from routes.submissions import router as submissions_router
 from routes.users import router as users_router
 from routes.dataverse import router as dataverse_router
 from routes.chat import router as chat_router
+from routes.feedback import router as feedback_router
 
 # Create FastAPI app
 DESCRIPTION = """\
@@ -122,6 +123,7 @@ app.include_router(submissions_router, dependencies=auth_dep)
 app.include_router(users_router, dependencies=auth_dep)
 app.include_router(dataverse_router, dependencies=auth_dep)
 app.include_router(chat_router, dependencies=auth_dep)
+app.include_router(feedback_router)  # no auth — anyone, signed in or not, can send feedback
 
 
 if __name__ == "__main__":
