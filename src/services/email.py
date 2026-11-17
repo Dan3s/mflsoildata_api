@@ -13,7 +13,12 @@ from email.message import EmailMessage
 logger = logging.getLogger("mfl.email")
 
 
-def send_email(to: str, subject: str, body: str) -> bool:
+def is_configured() -> bool:
+    """True when SMTP is set up, i.e. ``send_email`` really sends instead of logging."""
+    return bool(os.getenv("SMTP_HOST"))
+
+
+def send_email(to: str, subject: str, body: str, reply_to: str | None = None) -> bool:
     if not to:
         return False
 
@@ -32,6 +37,8 @@ def send_email(to: str, subject: str, body: str) -> bool:
     msg["From"] = sender
     msg["To"] = to
     msg["Subject"] = subject
+    if reply_to:
+        msg["Reply-To"] = reply_to
     msg.set_content(body)
 
     try:

@@ -1000,7 +1000,7 @@ def positional_issues(parsed: ParsedFile, specs: List["ColumnSpec"]) -> List[dic
                     0, cid, header,
                     f"Column {position} of the file ('{header}') is the '{structural_label(other, 'en')}' field, but "
                     f"because the file has no technical-id row it was read as '{label}'. "
-                    f"Use “Map my columns” so each column is matched by its name.",
+                    f"Upload the file again so each column is matched by its name.",
                     "error", "HEADER_MISMATCH",
                 )
             )
@@ -1019,7 +1019,7 @@ def positional_issues(parsed: ParsedFile, specs: List["ColumnSpec"]) -> List[dic
             _newvar_issue(
                 0, None, shown,
                 f"{len(parsed.positional_extra)} column(s) after the ones selected were not read at all ({shown}). "
-                f"Select them in the template step, or use “Map my columns”.",
+                f"Select them in the template step, or upload the file again to match its columns by name.",
                 "warning", "COLUMNS_IGNORED",
             )
         )
