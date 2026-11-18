@@ -21,6 +21,7 @@ class SiteCreate(SiteBase):
 class SiteRead(SiteBase):
     id: int
     project_id: int
+    location_precision: str = "EXACT"
     created_at: datetime
     updated_at: datetime
 

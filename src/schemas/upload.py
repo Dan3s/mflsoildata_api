@@ -9,6 +9,9 @@ class TemplateColumn(BaseModel):
     id: str
     label: str
     required: bool = False
+    # Set on columns of which a group is required rather than each one ("location": the
+    # coordinates, or else admin 1 + admin 2).
+    required_one_of: Optional[str] = None
     value_type: str
     unit: Optional[str] = None
     db_target: Optional[str] = None
@@ -47,6 +50,9 @@ class ValidationIssue(BaseModel):
     message: str
     severity: str  # error | warning
     code: str
+    # The column's name as the template shows it (the technical id in ``column`` is what the
+    # variables use: "var:14377"), when the issue is about a column of the template.
+    column_label: Optional[str] = None
     # Set when ``row`` belongs to another sheet than the data one (the "New variables"
     # sheet). ``row`` 0 means the problem concerns the file or a column, not a row.
     sheet: Optional[str] = None

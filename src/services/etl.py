@@ -50,6 +50,12 @@ from mflsoildata_orm.models import (
     Variable,
 )
 from schemas.upload import ColumnMappingEntry
+from services.admin_areas import (
+    PRECISION_EXACT,
+    AdminResolver,
+    Placement,
+    Unplaced,
+)
 
 # ---------------------------------------------------------------------------
 # Constants & catalog of structural columns
@@ -156,7 +162,14 @@ QUALIFIER_RE = re.compile(r"^\s*(<|>)\s*(.+)$")
 # They carry real analytical meaning (the analyte was below the limit), so they
 # are stored as a qualifier with a null value rather than rejected as garbage.
 # "LQ"/"LQM" are the Spanish-language lab spelling of the quantification limit (method).
-LIMIT_TOKENS = {"LOQ", "LOD", "DL", "MDL", "BDL", "BLD", "LQ", "LQM"}
+LIMIT_TOKENS = {
+    "LOQ", "LOD", "DL", "MDL", "BDL", "BLD", "LQ", "LQM",
+    # Spanish: límite de cuantificación / de detección (del método)
+    "LCM", "LDM", "LC", "LD", "LMD", "LMC",
+}
+# Labs name their limits in many ways. After a "<" an acronym that starts or ends with an "L"
+# (limit) is one of them: "<LCM", "<LQ", "<MQL"; anything else is still a mistake.
+_LIMIT_ACRONYM_RE = re.compile(r"^(L[A-Z]{1,4}|[A-Z]{1,3}L)$")
 
 # --- "New variables" sheet (variables the uploader proposes) ---------------------
 
@@ -224,16 +237,19 @@ class StructuralColumn:
     db_target: str
     example: Optional[str] = None
     unit: Optional[str] = None
+    # Columns of which a group, not each one, is required: a site needs its coordinates OR its
+    # admin 1 and admin 2 ("location"). Neither is mandatory on its own.
+    required_one_of: Optional[str] = None
 
 
-# Structural block. The first 8 are the mandatory "Identificación" columns from
-# the frontend docs; the rest are optional but commonly available.
+# Structural block. The first 6 and the sample type are mandatory. Where the site is is
+# asked for as a group: its coordinates (latitude + longitude) OR its admin 1 + admin 2.
 STRUCTURAL_COLUMNS: List[StructuralColumn] = [
     StructuralColumn("project_code", "Project Code", True, "text", "projects.code", "CLOC-CO"),
     StructuralColumn("project_name", "Project Name", True, "text", "projects.name", "Clima-LoCa Colombia"),
     StructuralColumn("site_code", "Site Code", True, "text", "sites.site_code", "S-001"),
-    StructuralColumn("latitude", "Site Latitude", True, "numeric", "sites.geom", "4.6097"),
-    StructuralColumn("longitude", "Site Longitude", True, "numeric", "sites.geom", "-74.0817"),
+    StructuralColumn("latitude", "Site Latitude", False, "numeric", "sites.geom", "4.6097", required_one_of="location"),
+    StructuralColumn("longitude", "Site Longitude", False, "numeric", "sites.geom", "-74.0817", required_one_of="location"),
     StructuralColumn("event_date", "Sampling Date", True, "date", "sampling_events.event_date", "2024-04-15"),
     StructuralColumn("sample_code", "Sample Code", True, "text", "samples.sample_code", "M-001"),
     StructuralColumn("sample_type_code", "Sample Type", True, "text", "samples.sample_type_id", "SOIL"),
@@ -241,8 +257,8 @@ STRUCTURAL_COLUMNS: List[StructuralColumn] = [
     StructuralColumn("project_country", "Project Country", False, "text", "projects.country", "Colombia"),
     StructuralColumn("project_donor", "Donor", False, "text", "projects.donor"),
     StructuralColumn("site_country", "Site Country", False, "text", "sites.country", "Colombia"),
-    StructuralColumn("admin_1", "Admin 1 (Department/State)", False, "text", "sites.admin_1"),
-    StructuralColumn("admin_2", "Admin 2 (Municipality)", False, "text", "sites.admin_2"),
+    StructuralColumn("admin_1", "Admin 1 (Department/State)", False, "text", "sites.admin_1", required_one_of="location"),
+    StructuralColumn("admin_2", "Admin 2 (Municipality)", False, "text", "sites.admin_2", required_one_of="location"),
     StructuralColumn("admin_3", "Admin 3", False, "text", "sites.admin_3"),
     StructuralColumn("altitude_m", "Altitude (m)", False, "numeric", "sites.altitude_m", unit="m"),
     StructuralColumn("event_activity", "Event Activity", False, "text", "sampling_events.activity"),
@@ -279,16 +295,16 @@ STRUCTURAL_DESCRIPTIONS: Dict[str, str] = {
     "project_code": "Unique, stable project code (uppercase, no accents).",
     "project_name": "Human-readable project name.",
     "site_code": "Site code, unique within the project.",
-    "latitude": "Site latitude in decimal degrees (WGS84).",
-    "longitude": "Site longitude in decimal degrees (WGS84).",
+    "latitude": "Site latitude in decimal degrees (WGS84). Give latitude and longitude, or else admin 1 and admin 2.",
+    "longitude": "Site longitude in decimal degrees (WGS84). Give latitude and longitude, or else admin 1 and admin 2.",
     "event_date": "Sampling or visit date (YYYY-MM-DD).",
     "sample_code": "External sample identifier, unique per event.",
     "sample_type_code": "Sample type: SOIL, LEAF, GRAIN, SOIL_PROFILE or SOIL_HORIZON.",
     "project_country": "Main country of the project.",
     "project_donor": "Project donor or funder.",
     "site_country": "Country of the site.",
-    "admin_1": "Administrative division level 1 (e.g. department/province/state).",
-    "admin_2": "Administrative division level 2 (e.g. municipality).",
+    "admin_1": "Administrative division level 1 (e.g. department/province/state). Required, with admin 2, if there are no coordinates.",
+    "admin_2": "Administrative division level 2 (e.g. municipality). Required, with admin 1, if there are no coordinates.",
     "admin_3": "Administrative division level 3 (e.g. village/parish).",
     "altitude_m": "Site altitude in meters above sea level.",
     "event_activity": "Activity carried out during the sampling event.",
@@ -298,16 +314,16 @@ STRUCTURAL_DESCRIPTIONS_ES: Dict[str, str] = {
     "project_code": "Código único y estable del proyecto (mayúsculas, sin tildes).",
     "project_name": "Nombre legible del proyecto.",
     "site_code": "Código del sitio, único dentro del proyecto.",
-    "latitude": "Latitud del sitio en grados decimales (WGS84).",
-    "longitude": "Longitud del sitio en grados decimales (WGS84).",
+    "latitude": "Latitud del sitio en grados decimales (WGS84). Indica latitud y longitud, o si no admin 1 y admin 2.",
+    "longitude": "Longitud del sitio en grados decimales (WGS84). Indica latitud y longitud, o si no admin 1 y admin 2.",
     "event_date": "Fecha del muestreo o visita (AAAA-MM-DD).",
     "sample_code": "Identificador externo de la muestra, único por evento.",
     "sample_type_code": "Tipo de muestra: SOIL, LEAF, GRAIN, SOIL_PROFILE o SOIL_HORIZON.",
     "project_country": "País principal del proyecto.",
     "project_donor": "Donante o financiador del proyecto.",
     "site_country": "País del sitio.",
-    "admin_1": "División administrativa nivel 1 (p. ej. departamento/provincia).",
-    "admin_2": "División administrativa nivel 2 (p. ej. municipio).",
+    "admin_1": "División administrativa nivel 1 (p. ej. departamento/provincia). Obligatoria, con admin 2, si no hay coordenadas.",
+    "admin_2": "División administrativa nivel 2 (p. ej. municipio). Obligatoria, con admin 1, si no hay coordenadas.",
     "admin_3": "División administrativa nivel 3 (p. ej. vereda/corregimiento).",
     "altitude_m": "Altitud del sitio en metros sobre el nivel del mar.",
     "event_activity": "Actividad realizada en el evento de muestreo.",
@@ -392,8 +408,9 @@ DATE_HELP = (
 )
 NUMBER_HELP = (
     "Not a number. Enter the number only (e.g. 12.5), with a dot or comma decimal "
-    "separator. For results below the detection limit write '<LOQ', '<LOD' or "
-    "'<0.5'. If there is no value, leave the cell empty or write 'NA'."
+    "separator. For results below the detection or quantification limit write '<LOQ', "
+    "'<LCM' or '<0.5' (the '<' followed by the limit, as the lab gave it). If there is "
+    "no value, leave the cell empty or write 'NA'."
 )
 
 def parse_numeric(raw: Any) -> Tuple[Optional[Decimal], Optional[str], bool]:
@@ -421,7 +438,7 @@ def parse_numeric(raw: Any) -> Tuple[Optional[Decimal], Optional[str], bool]:
     # "< LOQ" / "BDL": below the detection limit. No number to store, but the
     # qualifier is the result, so keep it and report the cell as valid.
     bare = text.upper().replace(" ", "").replace("-", "").replace("_", "")
-    if bare in LIMIT_TOKENS:
+    if bare in LIMIT_TOKENS or (qualifier and _LIMIT_ACRONYM_RE.match(bare)):
         return None, f"{qualifier or '<'}{bare}", True
 
     # decimal comma -> dot (only when there is no dot already)
@@ -1222,12 +1239,19 @@ def validate(
     parsed: ParsedFile,
     specs: List[ColumnSpec],
     known_sample_type_codes: Optional[set] = None,
+    admin_resolver: Optional[AdminResolver] = None,
+    project_countries: Optional[Dict[str, str]] = None,
 ) -> Tuple[List[dict], dict, int]:
     """Validate parsed rows against column specs.
 
     ``known_sample_type_codes`` is the set of sample_type codes already in the
     catalog. Unknown codes are reported as a single warning per code (they are
     tolerated and created on import), not silently created.
+
+    A site is located by its coordinates or, failing that, by its admin 1 and admin 2. With an
+    ``admin_resolver`` the second case is also checked against the gazetteer (the area must be
+    known, so the site can be put on the map); ``project_countries`` (project code -> country of
+    projects already in the platform) fills in a country the file does not give.
 
     Returns (issues, summary, valid_row_count).
     """
@@ -1238,6 +1262,20 @@ def validate(
     missing_required = [cid for cid in REQUIRED_STRUCTURAL_IDS if cid not in present_ids]
     for cid in missing_required:
         issues.append(_value_issue(0, cid, None, f"Falta la columna obligatoria '{cid}'", "error", "MISSING_COLUMN"))
+
+    # Where the sites are: coordinates, or else admin 1 + admin 2. Without any of those columns no
+    # row can be placed, which is one finding about the file, not one per row.
+    has_coordinate_columns = {"latitude", "longitude"} <= present_ids
+    has_admin_columns = {"admin_1", "admin_2"} <= present_ids
+    locatable = has_coordinate_columns or has_admin_columns
+    if not locatable:
+        issues.append(_value_issue(
+            0, "latitude", None,
+            "The file has no way to place its sites: it needs the latitude and longitude columns, "
+            "or the admin_1 and admin_2 columns.",
+            "error", "LOCATION_COLUMNS_MISSING",
+        ))
+    project_countries = project_countries or {}
 
     projects: set = set()
     sites: set = set()
@@ -1282,6 +1320,54 @@ def validate(
                 rows_with_error.add(row_num)
         if lat is not None and lon is not None and abs(lat) <= 90 and abs(lon) <= 90 and abs(lat) > 50 and abs(lon) < 20:
             issues.append(_value_issue(row_num, "latitude", row.get("latitude"), "Latitude/longitude possibly swapped?", "warning", "POSSIBLE_SWAP"))
+
+        # location: coordinates, or else admin 1 + admin 2 (placed at the centre of the area)
+        if locatable and row_num not in rows_with_error:
+            if (lat is None) != (lon is None):
+                missing_one = "longitude" if lat is not None else "latitude"
+                issues.append(_value_issue(
+                    row_num, missing_one, row.get(missing_one),
+                    "Latitude and longitude go together: give both, or leave both empty and fill in admin 1 and admin 2.",
+                    "error", "COORDINATES_INCOMPLETE",
+                ))
+                rows_with_error.add(row_num)
+            elif lat is None:
+                admin_1, admin_2 = _clean_str(row.get("admin_1")), _clean_str(row.get("admin_2"))
+                if not (admin_1 and admin_2):
+                    issues.append(_value_issue(
+                        row_num, "latitude", None,
+                        "This row has no coordinates and no admin 1 + admin 2: give the coordinates, or both administrative levels.",
+                        "error", "LOCATION_REQUIRED",
+                    ))
+                    rows_with_error.add(row_num)
+                elif admin_resolver is not None:
+                    country = (
+                        _clean_str(row.get("site_country"))
+                        or _clean_str(row.get("project_country"))
+                        or project_countries.get(project_code or "")
+                    )
+                    placed = admin_resolver.resolve(country, admin_1, admin_2)
+                    if isinstance(placed, Unplaced):
+                        code = "COUNTRY_REQUIRED" if placed.reason == "NO_COUNTRY" else "ADMIN_NOT_FOUND"
+                        issues.append(_value_issue(
+                            row_num, "admin_2", admin_2,
+                            f"Cannot place the site without coordinates: {placed.detail}. "
+                            "Check the spelling, give the country, or give the coordinates.",
+                            "error", code,
+                        ))
+                        rows_with_error.add(row_num)
+                    elif placed.precision == "ADMIN_1":
+                        issues.append(_value_issue(
+                            row_num, "admin_2", admin_2,
+                            f"{placed.note}; the site will be placed at the centre of {placed.area}.",
+                            "warning", "ADMIN_LEVEL_FALLBACK",
+                        ))
+                    else:
+                        issues.append(_value_issue(
+                            row_num, "admin_2", admin_2,
+                            f"No coordinates: the site will be placed at the centre of {placed.area} and marked as approximate.",
+                            "warning", "APPROXIMATE_LOCATION",
+                        ))
 
         # event_date
         event_date = None
@@ -1690,6 +1776,7 @@ def import_upload(db, stored: StoredUpload, variable_resolutions: Optional[Dict[
     skipped_rows = 0
 
     # Caches keyed by natural keys to keep the import idempotent.
+    resolver = AdminResolver(db)
     projects_cache: Dict[str, Project] = {}
     sites_cache: Dict[Tuple[int, str], Site] = {}
     events_cache: Dict[Tuple[int, int, Optional[date], Optional[str]], SamplingEvent] = {}
@@ -1715,7 +1802,7 @@ def import_upload(db, stored: StoredUpload, variable_resolutions: Optional[Dict[
         # --- site ---
         lat, _, _ = parse_numeric(row.get("latitude"))
         lon, _, _ = parse_numeric(row.get("longitude"))
-        site = _get_or_create_site(db, sites_cache, project, site_code_raw, lat, lon, row, inserted)
+        site = _get_or_create_site(db, sites_cache, project, site_code_raw, lat, lon, row, inserted, resolver)
 
         # --- sampling event ---
         event_date, _ = parse_date(row.get("event_date"))
@@ -1765,7 +1852,7 @@ def _get_or_create_project(db, cache, code, name, row, inserted) -> Project:
     return project
 
 
-def _get_or_create_site(db, cache, project: Project, site_code_raw, lat, lon, row, inserted) -> Site:
+def _get_or_create_site(db, cache, project: Project, site_code_raw, lat, lon, row, inserted, resolver: Optional[AdminResolver] = None) -> Site:
     site_code = normalize_code(site_code_raw) or site_code_raw
     key = (project.id, site_code)
     if key in cache:
@@ -1773,9 +1860,26 @@ def _get_or_create_site(db, cache, project: Project, site_code_raw, lat, lon, ro
     site = db.query(Site).filter(Site.project_id == project.id, Site.site_code == site_code).first()
     if not site:
         geom = None
+        precision = PRECISION_EXACT
         if lat is not None and lon is not None:
             geom = func.ST_SetSRID(func.ST_MakePoint(float(lon), float(lat)), 4326)
+        elif resolver is not None:
+            # No coordinates: the centre of its municipality (or department), flagged as approximate.
+            country = (
+                _clean_str(row.get("site_country"))
+                or _clean_str(row.get("project_country"))
+                or project.country
+            )
+            placed = resolver.resolve(country, _clean_str(row.get("admin_1")), _clean_str(row.get("admin_2")))
+            if isinstance(placed, Placement):
+                geom = func.ST_SetSRID(func.ST_MakePoint(placed.lon, placed.lat), 4326)
+                precision = placed.precision
+            else:
+                raise ValueError(
+                    f"Site '{site_code}' has no coordinates and could not be placed by its admin areas: {placed.detail}."
+                )
         site = Site(
+            location_precision=precision,
             project_id=project.id,
             site_code=site_code,
             country=_clean_str(row.get("site_country")),
