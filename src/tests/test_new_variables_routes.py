@@ -23,7 +23,7 @@ from routes import submissions as submissions_routes
 from routes import upload as upload_routes
 from services import etl
 
-REQUIRED = ",".join(etl.REQUIRED_STRUCTURAL_IDS)
+REQUIRED = ",".join([*etl.REQUIRED_STRUCTURAL_IDS, "latitude", "longitude"])
 
 
 @pytest.fixture

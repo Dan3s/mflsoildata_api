@@ -41,7 +41,10 @@ def test_things_that_are_not_dates_are_still_refused(text):
     assert etl.parse_date(text) == (None, False)
 
 
-@pytest.mark.parametrize("text", ["<LQM", "< LQM", "<LQ", "<LOQ", "BDL"])
+@pytest.mark.parametrize(
+    "text",
+    ["<LQM", "< LQM", "<LQ", "<LOQ", "BDL", "< LCM", "<LCM", "<LDM", "< LD", "<LMD", "<MQL", "> LSC"],
+)
 def test_detection_limit_tokens_are_a_result_not_garbage(text):
     value, qualifier, ok = etl.parse_numeric(text)
     assert ok and value is None and qualifier
@@ -52,12 +55,14 @@ def _csv_file(header, row):
 
 
 # What the Córdoba / RUTAS_PDET files looked like: the platform's Spanish headers and no
-# technical-id row, with the country where the 8th required column ought to be.
+# technical-id row, with the country where the last required column (the sample type) ought to
+# be. (Latitude and longitude are no longer among the required ones: a site is located by them
+# or by its admin areas.)
 HEADER = [
-    "Código de Proyecto", "Nombre del Proyecto", "Código del Sitio", "Latitud del Sitio", "Longitud del Sitio",
-    "Fecha de Muestreo", "Código de Muestra", "País del Proyecto", "País del Sitio", "pH (Un) — SOIL",
+    "Código de Proyecto", "Nombre del Proyecto", "Código del Sitio", "Fecha de Muestreo", "Código de Muestra",
+    "País del Proyecto", "País del Sitio", "pH (Un) — SOIL",
 ]
-ROW = ["P", "Proyecto", "S1", "8.2", "-76.0", "2024-03-01", "S1", "Colombia", "Colombia", "5.2"]
+ROW = ["P", "Proyecto", "S1", "2024-03-01", "S1", "Colombia", "Colombia", "5.2"]
 
 
 def test_columns_read_by_position_keep_the_files_headers():
@@ -101,3 +106,14 @@ def test_explicit_mapping_has_no_positional_checks():
     ]
     parsed = etl.parse_file(_csv_file(HEADER, ROW), "f.csv", column_mapping=mapping)
     assert parsed.positional_headers is None and etl.positional_issues(parsed, []) == []
+
+
+@pytest.mark.parametrize("text", ["<abc", "<hello", "< xyz", "ten", "12,5,3", "<>"])
+def test_a_word_after_a_less_than_sign_is_still_a_mistake_unless_it_names_a_limit(text):
+    assert etl.parse_numeric(text)[2] is False
+
+
+def test_the_value_and_the_qualifier_of_a_limit_are_kept():
+    value, qualifier, ok = etl.parse_numeric("< LCM")
+    assert ok and value is None and qualifier == "<LCM"
+    assert etl.parse_numeric("<0.5") == (etl.Decimal("0.5"), "<", True)

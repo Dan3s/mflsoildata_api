@@ -42,6 +42,7 @@ from schemas.upload import (
     ValidateResponse,
 )
 from services import etl
+from services.admin_areas import AdminResolver
 
 router = APIRouter(prefix="/upload", tags=["Upload"])
 
@@ -65,7 +66,7 @@ async def get_template_columns(
             description=etl._t(etl.GROUP_DESCRIPTIONS["estructura"], lang),
             columns=[
                 TemplateColumn(
-                    id=c.id, label=etl.structural_label(c.id, lang), required=c.required, value_type=c.value_type,
+                    id=c.id, label=etl.structural_label(c.id, lang), required=c.required, required_one_of=c.required_one_of, value_type=c.value_type,
                     unit=c.unit, db_target=c.db_target, example=c.example,
                 )
                 for c in etl.STRUCTURAL_COLUMNS
@@ -255,13 +256,29 @@ async def validate_upload(
         new_variables, new_variable_issues = etl.process_new_variables(db, parsed)
         specs, column_issues = etl.resolve_columns(db, parsed.column_ids, new_variables=new_variables)
         known_sample_types = {st.sample_type_code for st in db.query(SampleType.sample_type_code).all()}
-        issues, summary, valid_rows = etl.validate(parsed, specs, known_sample_types)
+        # Countries of projects that already exist: a file adding to one need not repeat the country
+        # for its sites to be placed by admin area.
+        file_project_codes = {etl.normalize_code(r.get("project_code")) for r in parsed.rows} - {None, ""}
+        project_countries = {
+            code: country
+            for code, country in db.query(Project.code, Project.country).filter(Project.code.in_(file_project_codes)).all()
+            if country
+        } if file_project_codes else {}
+        issues, summary, valid_rows = etl.validate(
+            parsed, specs, known_sample_types,
+            admin_resolver=AdminResolver(db), project_countries=project_countries,
+        )
         summary["new_variables"] = len(new_variables)
         # Uploads only add data: flag anything that already exists so the file is
         # corrected before it ever reaches a reviewer.
         conflicts = etl.find_existing_conflicts(db, parsed.rows, specs)
         positional = etl.positional_issues(parsed, specs)
         issues = project_issues + positional + new_variable_issues + column_issues + issues + conflicts
+        # Name the column the way the template does, not by its technical id.
+        labels = {s.id: s.label for s in specs}
+        for issue in issues:
+            if issue.get("column") in labels and not issue.get("column_label"):
+                issue["column_label"] = labels[issue["column"]]
         if conflicts:
             valid_rows = max(valid_rows - len({c["row"] for c in conflicts}), 0)
 
