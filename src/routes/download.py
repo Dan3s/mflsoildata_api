@@ -43,6 +43,7 @@ EXPORT_FIELDS = [
     "admin_1",
     "latitude",
     "longitude",
+    "location_precision",
     "event_date",
     "sample_code",
     "sample_type",
@@ -57,7 +58,9 @@ EXPORT_FIELDS = [
 
 # Columns that many datasets simply do not have. When nothing in the file fills one in,
 # it is left out rather than shipped as an empty column that looks like a defect.
-OPTIONAL_FIELDS = {"country", "admin_1", "event_date", "qualifier", "laboratory"}
+# ``location_precision`` is empty for a site with coordinates; it says ADMIN_2 / ADMIN_1 when the
+# latitude and longitude are the centre of its municipality / department, not a measured point.
+OPTIONAL_FIELDS = {"country", "admin_1", "location_precision", "event_date", "qualifier", "laboratory"}
 
 
 def _export_fields(records) -> List[str]:
@@ -107,6 +110,7 @@ def _filtered_query(
             Site.admin_1.label("admin_1"),
             func.ST_Y(Site.geom).label("latitude"),
             func.ST_X(Site.geom).label("longitude"),
+            Site.location_precision.label("location_precision"),
             SamplingEvent.event_date.label("event_date"),
             Sample.id.label("sample_id"),
             Sample.sample_code.label("sample_code"),
@@ -317,6 +321,7 @@ async def export(
                     "admin_1": row.admin_1 or "",
                     "latitude": float(row.latitude) if row.latitude is not None else "",
                     "longitude": float(row.longitude) if row.longitude is not None else "",
+                    "location_precision": "" if row.location_precision in (None, "EXACT") else row.location_precision,
                     "event_date": row.event_date.isoformat() if row.event_date else "",
                     "sample_code": row.sample_code,
                     "sample_type": row.sample_type,

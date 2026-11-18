@@ -219,6 +219,23 @@ mflsoildata_api/
 The submitter and reviewers are emailed at each step when SMTP is configured (see `.env.example`);
 without it, emails are only logged, so local dev/CI never breaks.
 
+**Where a site is.** A row needs its coordinates (latitude + longitude) **or** its admin 1 and
+admin 2. Without coordinates the site is placed at the centre of its municipality (admin 2; its
+department if the municipality is not recognised) using the `admin_areas` gazetteer, and
+`sites.location_precision` is set to `ADMIN_2` / `ADMIN_1` so the map and the downloads show
+that the point is approximate (it is `EXACT` for coordinates). The gazetteer comes from
+geoBoundaries (CC BY 4.0) and is loaded per country, once per database and again to refresh it:
+
+```bash
+python scripts/load_admin_areas.py COL PER ECU     # ISO3 codes; needs internet and DATABASE_URL
+```
+
+A country with no areas loaded cannot be used without coordinates: the validation says so.
+
+### Test data
+`python scripts/seed_chatbot_demo_2.py` creates a second synthetic dataset for trying the chatbot
+(`--remove` deletes it). Remove it, and `CHATBOT_TEST_DEMO`, before the data goes to production.
+
 ### Dataverse import
 - `GET /dataverse/preview?doi=…` — read-only preview of a Dataverse dataset's files
 - `GET /dataverse/file` — download one file; the frontend feeds it into the exact same

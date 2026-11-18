@@ -15,6 +15,9 @@ class SiteMapItem(BaseModel):
     altitude_m: Optional[float] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
+    # EXACT, or ADMIN_2 / ADMIN_1 when the site came without coordinates and is drawn at the
+    # centre of its municipality / department.
+    location_precision: str = "EXACT"
     measurement_count: int
     last_event_date: Optional[date] = None
     last_updated: Optional[datetime] = None
@@ -69,6 +72,9 @@ class SiteMapDetail(BaseModel):
     altitude_m: Optional[float] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
+    # EXACT, or ADMIN_2 / ADMIN_1 when the site came without coordinates and is drawn at the
+    # centre of its municipality / department.
+    location_precision: str = "EXACT"
     measurement_count: int
     last_event_date: Optional[date] = None
     last_updated: Optional[datetime] = None

@@ -70,6 +70,7 @@ def _site_base_query(db):
             Site.admin_3.label("admin_3"),
             latitude,
             longitude,
+            Site.location_precision.label("location_precision"),
             measurement_count,
             last_event_date,
             last_updated,
@@ -143,6 +144,7 @@ def _apply_site_filters(
         Site.admin_2,
         Site.admin_3,
         Site.geom,
+        Site.location_precision,
     )
 
 
@@ -381,6 +383,7 @@ async def get_map_sites(
                     altitude_m=float(row.altitude_m) if row.altitude_m is not None else None,
                     latitude=float(row.latitude) if row.latitude is not None else None,
                     longitude=float(row.longitude) if row.longitude is not None else None,
+                    location_precision=row.location_precision or "EXACT",
                     measurement_count=int(row.measurement_count or 0),
                     last_event_date=row.last_event_date,
                     last_updated=row.last_updated,
@@ -647,6 +650,7 @@ async def get_map_site_detail(
             altitude_m=row.altitude_m,
             latitude=float(row.latitude) if row.latitude is not None else None,
             longitude=float(row.longitude) if row.longitude is not None else None,
+            location_precision=row.location_precision or "EXACT",
             measurement_count=int(row.measurement_count or 0),
             last_event_date=row.last_event_date,
             last_updated=row.last_updated,
